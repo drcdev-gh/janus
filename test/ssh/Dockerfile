@@ -12,7 +12,6 @@ RUN chmod 755 /usr/local/bin/verify_key.sh && \
     chown root:root /usr/local/bin/verify_key.sh
 
 RUN useradd -m -s /bin/sh oidc
-RUN usermod -p "$(openssl passwd -6 dummy_password)" oidc
 
 EXPOSE 22
 

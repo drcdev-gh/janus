@@ -4,12 +4,12 @@ Protocol 2
 PermitRootLogin yes
 PasswordAuthentication no
 ChallengeResponseAuthentication no
-UsePam no
+UsePam yes
 
 Match User oidc
     AuthorizedKeysFile none
     AuthorizedKeysCommand /usr/local/bin/verify_key.sh %t %k
-    AuthorizedKeysCommandUser oidc
+    AuthorizedKeysCommandUser nobody
 
 LogLevel DEBUG3
 
