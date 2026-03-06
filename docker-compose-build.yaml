@@ -1,6 +1,6 @@
 
 services:
-  janus-sync:
+  janus:
     hostname: janus
     build:
       context: .
