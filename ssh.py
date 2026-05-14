@@ -1,6 +1,5 @@
 import logging
 import os
-from fastapi.responses import PlainTextResponse
 import re
 
 logger = logging.getLogger("uvicorn")
@@ -16,14 +15,15 @@ def validate_keyformat(pubkey: str) -> bool:
     return bool(PUBKEY_RE.fullmatch(pubkey.strip()))
 
 
-def validate_pubkey(pubkey: str, users):
+def validate_pubkey(pubkey: str, users) -> str | None:
+    """Return the validated public key string on success, None on failure."""
     if not validate_keyformat(pubkey):
         logger.warning("Invalid Public Key Format: %s", pubkey)
-        return PlainTextResponse("", status_code=204)
+        return None
 
-    if not users or len(users) == 0:
+    if not users:
         logger.warning("Unable to fetch users")
-        return PlainTextResponse("", status_code=204)
+        return None
 
     for user in users:
         for group in user.groups:
@@ -33,9 +33,8 @@ def validate_pubkey(pubkey: str, users):
                         if custom_claim["value"] == pubkey:
                             logger.info("Authorizing login for %s with key %s",
                                         user.username, pubkey)
-                            return PlainTextResponse(custom_claim["value"] + "\n")
-                # No need to continue running through the group loop
+                            return custom_claim["value"]
                 break
 
     logger.warning("No matching Public Key found: %s", pubkey)
-    return PlainTextResponse("", status_code=204)
+    return None

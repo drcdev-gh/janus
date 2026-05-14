@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from datetime import datetime, timedelta, timezone
 import logging
 import sys
@@ -35,8 +36,6 @@ app.add_middleware(
 )
 
 API_KEY = os.getenv("API_KEY")
-if not API_KEY:
-    raise RuntimeError("API_KEY must be set")
 
 # Quick caching mechanism for the PocketID user store.
 # TODO: not thread-safe — use a threading.Lock or cachetools.TTLCache if running
@@ -80,7 +79,6 @@ def sync_outline(x_api_key: str = Header(...)):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
 
-    global pocket_userstore
     logger.info("Syncing Pocket Groups to Outline")
     update_pocket_userstore(True)
 
@@ -105,8 +103,7 @@ def sync_outline(x_api_key: str = Header(...)):
     # Build the Outline user store once and share it across all sync operations.
     outline_users = outline.build_outline_user_store(outline_groups)
 
-    outline.set_missing_group_memberships(pocket_userstore, outline_users, group_name_to_id)
-    outline.delete_extra_group_memberships(pocket_userstore, outline_users, group_name_to_id)
+    outline.sync_group_memberships(pocket_userstore, outline_users, group_name_to_id)
     outline.sync_suspended_status(pocket_userstore, outline_users)
 
     return {"status": "ok"}
@@ -118,9 +115,11 @@ def validate_ssh_login(pubkey: str, x_api_key: str = Header(...)):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
 
-    global pocket_userstore
     update_pocket_userstore(False)
-    return ssh.validate_pubkey(pubkey, pocket_userstore)
+    key = ssh.validate_pubkey(pubkey, pocket_userstore)
+    if key is None:
+        return PlainTextResponse("", status_code=204)
+    return PlainTextResponse(key + "\n")
 
 
 if __name__ == "__main__":

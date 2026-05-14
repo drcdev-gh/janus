@@ -1,7 +1,11 @@
-import os
-import requests
-from dataclasses import dataclass
 import logging
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import requests
+
+from pocket import PocketUser
 
 logger = logging.getLogger("uvicorn")
 
@@ -42,52 +46,48 @@ def _post(endpoint: str, payload: dict | None = None) -> dict:
     return resp.json()
 
 
-def fetch_outline_users() -> list[dict]:
-    all_users = []
+def _paginate_post(
+    endpoint: str,
+    payload: dict,
+    extract: Callable[[dict], list[dict]],
+) -> list[dict]:
+    all_items = []
     offset = 0
     limit = 100
     while True:
-        body = _post("users.list", {"limit": limit, "offset": offset, "filter": "all"})
-        users = body.get("data", [])
-        if not users:
+        body = _post(endpoint, {**payload, "limit": limit, "offset": offset})
+        items = extract(body)
+        if not items:
             break
-        all_users.extend(users)
-        if len(users) < limit:
+        all_items.extend(items)
+        if len(items) < limit:
             break
         offset += limit
-    return all_users
+    return all_items
+
+
+def fetch_outline_users() -> list[dict]:
+    return _paginate_post(
+        "users.list",
+        {"filter": "all"},
+        lambda b: b.get("data", []),
+    )
 
 
 def fetch_outline_groups() -> list[dict]:
-    all_groups = []
-    offset = 0
-    limit = 100
-    while True:
-        body = _post("groups.list", {"limit": limit, "offset": offset})
-        groups = body.get("data", {}).get("groups", [])
-        if not groups:
-            break
-        all_groups.extend(groups)
-        if len(groups) < limit:
-            break
-        offset += limit
-    return all_groups
+    return _paginate_post(
+        "groups.list",
+        {},
+        lambda b: b.get("data", {}).get("groups", []),
+    )
 
 
 def _fetch_group_members(group_id: str) -> list[dict]:
-    all_members = []
-    offset = 0
-    limit = 100
-    while True:
-        body = _post("groups.memberships", {"id": group_id, "limit": limit, "offset": offset})
-        users = body.get("data", {}).get("users", [])
-        if not users:
-            break
-        all_members.extend(users)
-        if len(users) < limit:
-            break
-        offset += limit
-    return all_members
+    return _paginate_post(
+        "groups.memberships",
+        {"id": group_id},
+        lambda b: b.get("data", {}).get("users", []),
+    )
 
 
 def build_group_name_to_id(groups: list[dict]) -> dict[str, str]:
@@ -172,57 +172,49 @@ def delete_extra_groups(pocket_groups: set[str], groups: list[dict]) -> list[dic
     return remaining
 
 
-def _find_matching_pocket_user(pocket_users, outline_user: OutlineUser):
-    for pocket_user in pocket_users:
-        if pocket_user.email == outline_user.email:
-            return pocket_user
-    logger.warning("No PocketID user found for Outline user: %s", outline_user.email)
-    return None
-
-
-def set_missing_group_memberships(
-    pocket_users,
+def sync_group_memberships(
+    pocket_users: list[PocketUser],
     outline_users: list[OutlineUser],
     group_name_to_id: dict[str, str],
 ) -> None:
+    """Add missing and remove extra group memberships in a single pass.
+
+    Builds a pocket email→user map once up front so each outline user lookup
+    is O(1) rather than O(n).
+    """
+    pocket_by_email = {u.email: u for u in pocket_users}
     for outline_user in outline_users:
         if outline_user.suspended:
             continue
-        pocket_user = _find_matching_pocket_user(pocket_users, outline_user)
+        pocket_user = pocket_by_email.get(outline_user.email)
         if pocket_user is None:
+            logger.warning("No PocketID user found for Outline user: %s", outline_user.email)
             continue
-        for group_name in pocket_user.groups:
-            if group_name not in outline_user.groups:
-                group_id = group_name_to_id.get(group_name)
-                if group_id is None:
-                    logger.warning("Group %s not found in Outline", group_name)
-                    continue
-                logger.info("Adding %s to group %s", outline_user.email, group_name)
-                add_group_membership(group_id, outline_user.id)
+
+        pocket_groups = set(pocket_user.groups)
+        outline_groups = set(outline_user.groups)
+
+        for group_name in pocket_groups - outline_groups:
+            group_id = group_name_to_id.get(group_name)
+            if group_id is None:
+                logger.warning("Group %s not found in Outline", group_name)
+                continue
+            logger.info("Adding %s to group %s", outline_user.email, group_name)
+            add_group_membership(group_id, outline_user.id)
+
+        for group_name in outline_groups - pocket_groups:
+            group_id = group_name_to_id.get(group_name)
+            if group_id is None:
+                logger.warning("Group %s not found in Outline", group_name)
+                continue
+            logger.info("Removing %s from group %s", outline_user.email, group_name)
+            delete_group_membership(group_id, outline_user.id)
 
 
-def delete_extra_group_memberships(
-    pocket_users,
+def sync_suspended_status(
+    pocket_users: list[PocketUser],
     outline_users: list[OutlineUser],
-    group_name_to_id: dict[str, str],
 ) -> None:
-    for outline_user in outline_users:
-        if outline_user.suspended:
-            continue
-        pocket_user = _find_matching_pocket_user(pocket_users, outline_user)
-        if pocket_user is None:
-            continue
-        for group_name in outline_user.groups:
-            if group_name not in pocket_user.groups:
-                group_id = group_name_to_id.get(group_name)
-                if group_id is None:
-                    logger.warning("Group %s not found in Outline", group_name)
-                    continue
-                logger.info("Removing %s from group %s", outline_user.email, group_name)
-                delete_group_membership(group_id, outline_user.id)
-
-
-def sync_suspended_status(pocket_users, outline_users: list[OutlineUser]) -> None:
     """Suspend Outline users whose PocketID account is disabled; reactivate those re-enabled."""
     pocket_by_email = {u.email: u for u in pocket_users}
     for outline_user in outline_users:

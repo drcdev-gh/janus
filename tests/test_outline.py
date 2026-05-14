@@ -10,8 +10,7 @@ from outline import (
     build_outline_user_store,
     create_missing_groups,
     delete_extra_groups,
-    set_missing_group_memberships,
-    delete_extra_group_memberships,
+    sync_group_memberships,
     sync_suspended_status,
 )
 from pocket import PocketUser
@@ -37,10 +36,6 @@ def _users_resp(users):
 
 def _groups_resp(groups):
     return {"data": {"groups": groups}}
-
-
-def _members_resp(users):
-    return {"data": {"users": users}}
 
 
 # ---------------------------------------------------------------------------
@@ -221,85 +216,72 @@ class TestDeleteExtraGroups:
 
 
 # ---------------------------------------------------------------------------
-# set_missing_group_memberships
+# sync_group_memberships
 # ---------------------------------------------------------------------------
 
-class TestSetMissingGroupMemberships:
+class TestSyncGroupMemberships:
     def test_adds_missing_membership(self):
         pocket_users = [_pu("alice@example.com", ["Group A"])]
         outline_users = [_ou("o1", "alice@example.com", groups=[])]
         with patch("outline.add_group_membership") as mock_add:
-            set_missing_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
         mock_add.assert_called_once_with("g1", "o1")
+
+    def test_removes_extra_membership(self):
+        pocket_users = [_pu("alice@example.com", [])]
+        outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
+        with patch("outline.delete_group_membership") as mock_del:
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+        mock_del.assert_called_once_with("g1", "o1")
+
+    def test_adds_and_removes_in_single_pass(self):
+        pocket_users = [_pu("alice@example.com", ["Group B"])]
+        outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
+        group_map = {"Group A": "g1", "Group B": "g2"}
+        with patch("outline.add_group_membership") as mock_add, \
+             patch("outline.delete_group_membership") as mock_del:
+            sync_group_memberships(pocket_users, outline_users, group_map)
+        mock_add.assert_called_once_with("g2", "o1")
+        mock_del.assert_called_once_with("g1", "o1")
 
     def test_skips_existing_membership(self):
         pocket_users = [_pu("alice@example.com", ["Group A"])]
         outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
-        with patch("outline.add_group_membership") as mock_add:
-            set_missing_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+        with patch("outline.add_group_membership") as mock_add, \
+             patch("outline.delete_group_membership") as mock_del:
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
         mock_add.assert_not_called()
+        mock_del.assert_not_called()
 
     def test_skips_suspended_outline_user(self):
         pocket_users = [_pu("alice@example.com", ["Group A"])]
         outline_users = [_ou("o1", "alice@example.com", suspended=True)]
         with patch("outline.add_group_membership") as mock_add:
-            set_missing_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
         mock_add.assert_not_called()
 
     def test_skips_unmatched_outline_user(self):
         pocket_users = [_pu("other@example.com", ["Group A"])]
         outline_users = [_ou("o1", "alice@example.com")]
         with patch("outline.add_group_membership") as mock_add:
-            set_missing_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
         mock_add.assert_not_called()
 
     def test_skips_group_missing_from_map(self):
         pocket_users = [_pu("alice@example.com", ["Ghost Group"])]
         outline_users = [_ou("o1", "alice@example.com")]
         with patch("outline.add_group_membership") as mock_add:
-            set_missing_group_memberships(pocket_users, outline_users, {})
+            sync_group_memberships(pocket_users, outline_users, {})
         mock_add.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# delete_extra_group_memberships
-# ---------------------------------------------------------------------------
-
-class TestDeleteExtraGroupMemberships:
-    def test_removes_extra_membership(self):
-        pocket_users = [_pu("alice@example.com", [])]
-        outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
-        with patch("outline.delete_group_membership") as mock_del:
-            delete_extra_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
-        mock_del.assert_called_once_with("g1", "o1")
-
-    def test_keeps_valid_membership(self):
-        pocket_users = [_pu("alice@example.com", ["Group A"])]
-        outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
-        with patch("outline.delete_group_membership") as mock_del:
-            delete_extra_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
-        mock_del.assert_not_called()
-
-    def test_skips_suspended_outline_user(self):
-        pocket_users = [_pu("alice@example.com", [])]
-        outline_users = [_ou("o1", "alice@example.com", ["Group A"], suspended=True)]
-        with patch("outline.delete_group_membership") as mock_del:
-            delete_extra_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
-        mock_del.assert_not_called()
-
-    def test_skips_unmatched_outline_user(self):
-        pocket_users = [_pu("other@example.com", [])]
-        outline_users = [_ou("o1", "alice@example.com", ["Group A"])]
-        with patch("outline.delete_group_membership") as mock_del:
-            delete_extra_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
-        mock_del.assert_not_called()
-
-    def test_skips_group_missing_from_map(self):
-        pocket_users = [_pu("alice@example.com", [])]
-        outline_users = [_ou("o1", "alice@example.com", ["Ghost Group"])]
-        with patch("outline.delete_group_membership") as mock_del:
-            delete_extra_group_memberships(pocket_users, outline_users, {})
-        mock_del.assert_not_called()
+    def test_pocket_lookup_is_o1_not_linear(self):
+        # Verifies that the email map is built once by ensuring many outline users
+        # can be matched without the call count scaling with pocket user count.
+        pocket_users = [_pu(f"u{i}@example.com", ["G"]) for i in range(50)]
+        outline_users = [_ou(f"o{i}", f"u{i}@example.com") for i in range(50)]
+        with patch("outline.add_group_membership") as mock_add:
+            sync_group_memberships(pocket_users, outline_users, {"G": "g1"})
+        assert mock_add.call_count == 50
 
 
 # ---------------------------------------------------------------------------

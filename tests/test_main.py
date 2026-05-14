@@ -1,4 +1,3 @@
-import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -105,14 +104,13 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.delete_extra_groups", return_value=groups), \
              patch("main.outline.build_group_name_to_id", return_value={"Group A": "g1"}), \
              patch("main.outline.build_outline_user_store", return_value=[]), \
-             patch("main.outline.set_missing_group_memberships"), \
-             patch("main.outline.delete_extra_group_memberships"), \
+             patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
             response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
-    def test_all_outline_sync_functions_called(self):
+    def test_outline_sync_functions_called(self):
         groups = [{"id": "g1", "name": "Group A"}]
         outline_users = []
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
@@ -122,13 +120,11 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.delete_extra_groups", return_value=groups), \
              patch("main.outline.build_group_name_to_id", return_value={"Group A": "g1"}), \
              patch("main.outline.build_outline_user_store", return_value=outline_users) as mock_build, \
-             patch("main.outline.set_missing_group_memberships") as mock_set, \
-             patch("main.outline.delete_extra_group_memberships") as mock_del, \
+             patch("main.outline.sync_group_memberships") as mock_sync, \
              patch("main.outline.sync_suspended_status") as mock_suspend:
             client.get("/outline/sync", headers={"x-api-key": API_KEY})
         mock_build.assert_called_once_with(groups)
-        mock_set.assert_called_once()
-        mock_del.assert_called_once()
+        mock_sync.assert_called_once()
         mock_suspend.assert_called_once()
 
     def test_outline_user_store_built_once(self):
@@ -140,8 +136,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.delete_extra_groups", return_value=groups), \
              patch("main.outline.build_group_name_to_id", return_value={}), \
              patch("main.outline.build_outline_user_store", return_value=[]) as mock_build, \
-             patch("main.outline.set_missing_group_memberships"), \
-             patch("main.outline.delete_extra_group_memberships"), \
+             patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
             client.get("/outline/sync", headers={"x-api-key": API_KEY})
         assert mock_build.call_count == 1
@@ -170,12 +165,28 @@ class TestSshValidateEndpoint:
         response = client.get("/ssh/validate", headers={"x-api-key": API_KEY})
         assert response.status_code == 422
 
-    def test_delegates_to_ssh_validate_pubkey(self):
-        from fastapi.responses import PlainTextResponse
-        fake_response = PlainTextResponse("", status_code=204)
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA"
+    def test_valid_key_returns_200_with_key_body(self):
+        key = "ssh-ed25519 AAAA"
         with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
-             patch("main.ssh.validate_pubkey", return_value=fake_response) as mock_validate:
+             patch("main.ssh.validate_pubkey", return_value=key):
+            response = client.get("/ssh/validate",
+                                  params={"pubkey": key},
+                                  headers={"x-api-key": API_KEY})
+        assert response.status_code == 200
+        assert response.text == key + "\n"
+
+    def test_invalid_key_returns_204(self):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
+             patch("main.ssh.validate_pubkey", return_value=None):
+            response = client.get("/ssh/validate",
+                                  params={"pubkey": "ssh-ed25519 AAAA"},
+                                  headers={"x-api-key": API_KEY})
+        assert response.status_code == 204
+
+    def test_delegates_pubkey_and_store_to_ssh_module(self):
+        key = "ssh-ed25519 AAAA"
+        with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
+             patch("main.ssh.validate_pubkey", return_value=None) as mock_validate:
             client.get("/ssh/validate", params={"pubkey": key}, headers={"x-api-key": API_KEY})
         mock_validate.assert_called_once_with(key, main.pocket_userstore)
 
@@ -183,9 +194,8 @@ class TestSshValidateEndpoint:
         users = [_pu("a@b.com")]
         main.pocket_userstore = users
         main.last_updated_timestamp = datetime.now(timezone.utc)
-        from fastapi.responses import PlainTextResponse
         with patch("main.pocket.sync_from_pocket_id") as mock_sync, \
-             patch("main.ssh.validate_pubkey", return_value=PlainTextResponse("", status_code=204)):
+             patch("main.ssh.validate_pubkey", return_value=None):
             client.get("/ssh/validate",
                        params={"pubkey": "ssh-ed25519 AAAA"},
                        headers={"x-api-key": API_KEY})
