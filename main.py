@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import sys
 import os
@@ -53,7 +53,7 @@ def update_pocket_userstore(force_update: bool) -> bool:
     global pocket_userstore, last_updated_timestamp
 
     has_changed = False
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     def should_refresh():
         return (
