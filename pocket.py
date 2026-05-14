@@ -1,7 +1,6 @@
 import os
 import requests
-from typing import Set
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 BASE_URL = os.getenv("POCKETID_API_URL")
 API_KEY = os.getenv("POCKETID_API_KEY")
@@ -20,78 +19,53 @@ class PocketUser:
     username: str
     user_id: str
     email: str
-    groups: Set[str]
+    groups: list[str]
     custom_claims: list[dict]
+    disabled: bool
 
 
-def fetch_users():
-    all_users = []
+def _paginate(path: str) -> list[dict]:
+    all_items = []
     page = 1
     limit = 50
-
     while True:
         resp = requests.get(
-            f"{BASE_URL}/api/users",
+            f"{BASE_URL}/api/{path}",
             headers=HEADERS,
-            params={
-                "pagination[page]": page,
-                "pagination[limit]": limit
-            },
+            params={"pagination[page]": page, "pagination[limit]": limit},
             timeout=2,
         )
         resp.raise_for_status()
-
-        users = resp.json()["data"]
-        lastPage = resp.json()["pagination"]["totalPages"]
-
-        if not users:
+        body = resp.json()
+        items = body["data"]
+        last_page = body["pagination"]["totalPages"]
+        if not items:
             break
-
-        all_users.extend(users)
-        if lastPage == page:
+        all_items.extend(items)
+        if last_page == page:
             break
-
-        page = page + 1
-
-    return all_users
+        page += 1
+    return all_items
 
 
-def sync_from_pocket_id():
-    user_store: list[PocketUser] = []
-
-    users = fetch_users()
-
-    for user in users:
-        # TODO DC: At some point, probably will need to use this also to disable users
-        # in other services as well
-        if user["disabled"] is True:
-            continue
-
-        groups = user["userGroups"]
-        # TODO DC: Filtered groups is a misnomer from when this had a regex check as well
-        filtered_groups = []
-        for group in groups:
-            group_name = group["name"]
-            filtered_groups.append(group_name)
-
-        userobj = PocketUser(username=user["username"],
-                             user_id=user["id"],
-                             email=user["email"],
-                             groups=filtered_groups,
-                             custom_claims=user["customClaims"])
-        user_store.append(userobj)
-
-    return user_store
+def sync_from_pocket_id() -> list[PocketUser]:
+    return [
+        PocketUser(
+            username=u["username"],
+            user_id=u["id"],
+            email=u["email"],
+            groups=[g["name"] for g in u["userGroups"]],
+            custom_claims=u["customClaims"],
+            disabled=u["disabled"],
+        )
+        for u in _paginate("users")
+    ]
 
 
-def get_unique_groups(user_store=None):
-    if user_store is None:
-        user_store = sync_from_pocket_id()
+def get_unique_groups() -> set[str]:
+    """Return the authoritative group set directly from PocketID.
 
-    unique_groups = set()
-    for user in user_store:
-        for group in user.groups:
-            unique_groups.add(group)
-
-    return unique_groups
-
+    Using /api/user-groups is more correct than deriving groups from user records
+    because it includes groups that exist but currently have no members.
+    """
+    return {g["name"] for g in _paginate("user-groups")}

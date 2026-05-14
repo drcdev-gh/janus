@@ -6,9 +6,7 @@ Lets other services commonly found in organisations or homelabs access group or 
 
 - Syncs all users and groups from PocketID to Outline
 - Extra groups in Outline are deleted
-- Known limitations:
-    - Only up to 100 users work
-    - Disabled users in PocketID aren't handled at all
+- Disabled users in PocketID are suspended in Outline and reactivated if re-enabled
 
 ## SSH
 
