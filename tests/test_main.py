@@ -271,3 +271,10 @@ class TestSshValidateEndpoint:
                        params={"pubkey": "ssh-ed25519 AAAA"},
                        headers={"x-api-key": API_KEY})
         mock_sync.assert_not_called()
+
+    def test_pubkey_exceeding_8192_chars_returns_422(self):
+        oversized = "ssh-ed25519 " + "A" * 8192
+        response = client.get("/ssh/validate",
+                              params={"pubkey": oversized},
+                              headers={"x-api-key": API_KEY})
+        assert response.status_code == 422

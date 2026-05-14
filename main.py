@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from datetime import datetime, timedelta, timezone
@@ -116,7 +116,7 @@ def sync_outline(x_api_key: str = Header(...)):
 
 
 @app.get("/ssh/validate")
-def validate_ssh_login(pubkey: str, x_api_key: str = Header(...)):
+def validate_ssh_login(pubkey: str = Query(max_length=8192), x_api_key: str = Header(...)):
     if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
