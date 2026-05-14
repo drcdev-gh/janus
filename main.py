@@ -2,6 +2,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from datetime import datetime, timedelta, timezone
+import hmac
 import logging
 import sys
 import os
@@ -24,6 +25,11 @@ REQUIRED_ENVS = [
 for var in REQUIRED_ENVS:
     if var not in os.environ:
         logger.error("Required environment variable %s not set", var)
+        sys.exit(1)
+
+for url_var in ("POCKETID_API_URL", "OUTLINE_API_URL"):
+    if not os.environ[url_var].startswith("https://"):
+        logger.error("%s must use HTTPS", url_var)
         sys.exit(1)
 
 app = FastAPI()
@@ -75,7 +81,7 @@ def update_pocket_userstore(force_update: bool) -> bool:
 
 @app.get("/outline/sync")
 def sync_outline(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
+    if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
 
@@ -111,7 +117,7 @@ def sync_outline(x_api_key: str = Header(...)):
 
 @app.get("/ssh/validate")
 def validate_ssh_login(pubkey: str, x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
+    if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
 

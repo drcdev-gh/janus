@@ -1,3 +1,6 @@
+import hmac
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -13,6 +16,74 @@ client = TestClient(main.app)
 def _pu(email, groups=None, disabled=False):
     return PocketUser(username="alice", user_id="u1", email=email,
                       groups=groups or [], custom_claims=[], disabled=disabled)
+
+
+# ---------------------------------------------------------------------------
+# Security: constant-time API key comparison
+# ---------------------------------------------------------------------------
+
+class TestApiKeyComparison:
+    def test_correct_key_is_accepted(self):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
+             patch("main.pocket.get_unique_groups", return_value=set()):
+            response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
+        assert response.status_code != 403
+
+    def test_wrong_key_is_rejected(self):
+        response = client.get("/outline/sync", headers={"x-api-key": "wrong"})
+        assert response.status_code == 403
+
+    def test_comparison_uses_compare_digest(self):
+        # Verify the implementation calls hmac.compare_digest rather than ==
+        # by inspecting the source — this guards against accidental regression.
+        import inspect
+        source = inspect.getsource(main.sync_outline)
+        assert "compare_digest" in source
+
+
+# ---------------------------------------------------------------------------
+# Security: HTTPS enforcement
+# ---------------------------------------------------------------------------
+
+class TestHttpsEnforcement:
+    def test_http_pocket_url_exits(self):
+        env = {"POCKETID_API_URL": "http://pocket.test",
+               "POCKETID_API_KEY": "k",
+               "OUTLINE_API_URL": "https://outline.test",
+               "OUTLINE_API_KEY": "k",
+               "SSH_ALLOWED_GROUP": "G",
+               "API_KEY": "k"}
+        result = subprocess.run(
+            [sys.executable, "-c", "import main"],
+            env=env, capture_output=True,
+        )
+        assert result.returncode != 0
+
+    def test_http_outline_url_exits(self):
+        env = {"POCKETID_API_URL": "https://pocket.test",
+               "POCKETID_API_KEY": "k",
+               "OUTLINE_API_URL": "http://outline.test",
+               "OUTLINE_API_KEY": "k",
+               "SSH_ALLOWED_GROUP": "G",
+               "API_KEY": "k"}
+        result = subprocess.run(
+            [sys.executable, "-c", "import main"],
+            env=env, capture_output=True,
+        )
+        assert result.returncode != 0
+
+    def test_https_urls_do_not_exit(self):
+        env = {"POCKETID_API_URL": "https://pocket.test",
+               "POCKETID_API_KEY": "k",
+               "OUTLINE_API_URL": "https://outline.test",
+               "OUTLINE_API_KEY": "k",
+               "SSH_ALLOWED_GROUP": "G",
+               "API_KEY": "k"}
+        result = subprocess.run(
+            [sys.executable, "-c", "import main"],
+            env=env, capture_output=True,
+        )
+        assert result.returncode == 0
 
 
 # ---------------------------------------------------------------------------
