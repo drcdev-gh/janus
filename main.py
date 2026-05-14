@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -32,15 +34,6 @@ for url_var in ("POCKETID_API_URL", "OUTLINE_API_URL"):
         logger.error("%s must use HTTPS", url_var)
         sys.exit(1)
 
-app = FastAPI()
-
-origins = ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_methods=["GET"]
-)
-
 API_KEY = os.getenv("API_KEY")
 
 # Quick caching mechanism for the PocketID user store.
@@ -48,6 +41,8 @@ API_KEY = os.getenv("API_KEY")
 # with multiple Uvicorn workers.
 pocket_userstore = None
 last_updated_timestamp = None
+
+SYNC_INTERVAL_SECONDS = 30 * 60
 
 
 def update_pocket_userstore(force_update: bool) -> bool:
@@ -79,24 +74,21 @@ def update_pocket_userstore(force_update: bool) -> bool:
     return has_changed
 
 
-@app.get("/outline/sync")
-def sync_outline(x_api_key: str = Header(...)):
-    if not hmac.compare_digest(x_api_key, API_KEY):
-        logger.warning("Invalid API key received")
-        raise HTTPException(status_code=403)
+def _run_sync() -> str | None:
+    """Run the full Outline sync.
 
-    logger.info("Syncing Pocket Groups to Outline")
+    Returns None on success, or an error message if the sync was skipped
+    due to an empty PocketID store or group list. Raises on API errors.
+    """
     update_pocket_userstore(True)
 
     if not pocket_userstore:
-        logger.warning("Empty Pocket Store Detected -- Failing")
-        raise HTTPException(status_code=404)
+        return "empty Pocket user store"
 
     pocket_groups = pocket.get_unique_groups()
 
     if not pocket_groups:
-        logger.warning("Empty Pocket Groups Detected -- Failing")
-        raise HTTPException(status_code=404)
+        return "empty Pocket groups"
 
     # Fetch Outline groups once; create_missing_groups / delete_extra_groups
     # return an updated list so we never need to re-fetch from the API.
@@ -111,7 +103,60 @@ def sync_outline(x_api_key: str = Header(...)):
 
     outline.sync_group_memberships(pocket_userstore, outline_users, group_name_to_id)
     outline.sync_suspended_status(pocket_userstore, outline_users)
+    return None
 
+
+async def _scheduled_sync():
+    """Background task: run _run_sync every SYNC_INTERVAL_SECONDS.
+
+    _run_sync makes blocking HTTP calls so it runs in a thread-pool executor
+    to avoid stalling the event loop while SSH validations are in flight.
+    """
+    while True:
+        await asyncio.sleep(SYNC_INTERVAL_SECONDS)
+        logger.info("Scheduled sync starting")
+        try:
+            error = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+            if error:
+                logger.warning("Scheduled sync skipped: %s", error)
+            else:
+                logger.info("Scheduled sync complete")
+        except Exception:
+            logger.exception("Scheduled sync failed")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_scheduled_sync())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(lifespan=lifespan)
+
+origins = ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["GET"]
+)
+
+
+@app.get("/outline/sync")
+def sync_outline(x_api_key: str = Header(...)):
+    if not hmac.compare_digest(x_api_key, API_KEY):
+        logger.warning("Invalid API key received")
+        raise HTTPException(status_code=403)
+
+    logger.info("Manual sync triggered")
+    error = _run_sync()
+    if error:
+        logger.warning("Sync skipped: %s", error)
+        raise HTTPException(status_code=404)
     return {"status": "ok"}
 
 

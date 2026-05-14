@@ -1,4 +1,5 @@
 import hmac
+import pytest
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -135,6 +136,47 @@ class TestUpdatePocketUserstore:
         with patch("main.pocket.sync_from_pocket_id", return_value=[]) as mock_sync:
             main.update_pocket_userstore(False)
         mock_sync.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _run_sync
+# ---------------------------------------------------------------------------
+
+class TestRunSync:
+    def setup_method(self):
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def test_returns_none_on_success(self):
+        groups = [{"id": "g1", "name": "Group A"}]
+        with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
+             patch("main.pocket.get_unique_groups", return_value={"Group A"}), \
+             patch("main.outline.fetch_outline_groups", return_value=groups), \
+             patch("main.outline.create_missing_groups", return_value=groups), \
+             patch("main.outline.delete_extra_groups", return_value=groups), \
+             patch("main.outline.build_group_name_to_id", return_value={}), \
+             patch("main.outline.build_outline_user_store", return_value=[]), \
+             patch("main.outline.sync_group_memberships"), \
+             patch("main.outline.sync_suspended_status"):
+            assert main._run_sync() is None
+
+    def test_returns_error_string_when_pocket_store_empty(self):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[]):
+            result = main._run_sync()
+        assert result is not None
+        assert "empty" in result.lower()
+
+    def test_returns_error_string_when_pocket_groups_empty(self):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
+             patch("main.pocket.get_unique_groups", return_value=set()):
+            result = main._run_sync()
+        assert result is not None
+        assert "empty" in result.lower()
+
+    def test_propagates_api_exceptions(self):
+        with patch("main.pocket.sync_from_pocket_id", side_effect=Exception("API down")):
+            with pytest.raises(Exception, match="API down"):
+                main._run_sync()
 
 
 # ---------------------------------------------------------------------------
