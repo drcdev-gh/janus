@@ -27,11 +27,11 @@ class TestApiKeyComparison:
     def test_correct_key_is_accepted(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value=set()):
-            response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
         assert response.status_code != 403
 
     def test_wrong_key_is_rejected(self):
-        response = client.get("/outline/sync", headers={"x-api-key": "wrong"})
+        response = client.post("/outline/sync", headers={"x-api-key": "wrong"})
         assert response.status_code == 403
 
     def test_comparison_uses_compare_digest(self):
@@ -180,7 +180,7 @@ class TestRunSync:
 
 
 # ---------------------------------------------------------------------------
-# GET /outline/sync
+# POST /outline/sync
 # ---------------------------------------------------------------------------
 
 class TestSyncOutlineEndpoint:
@@ -189,23 +189,23 @@ class TestSyncOutlineEndpoint:
         main.last_updated_timestamp = None
 
     def test_missing_api_key_returns_422(self):
-        response = client.get("/outline/sync")
+        response = client.post("/outline/sync")
         assert response.status_code == 422
 
     def test_wrong_api_key_returns_403(self):
-        response = client.get("/outline/sync", headers={"x-api-key": "wrong"})
+        response = client.post("/outline/sync", headers={"x-api-key": "wrong"})
         assert response.status_code == 403
 
     def test_empty_pocket_store_returns_404(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
              patch("main.pocket.get_unique_groups", return_value={"Group A"}):
-            response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 404
 
     def test_empty_pocket_groups_returns_404(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value=set()):
-            response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 404
 
     def test_successful_sync_returns_ok(self):
@@ -219,7 +219,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=[]), \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
-            response = client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
@@ -235,7 +235,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=outline_users) as mock_build, \
              patch("main.outline.sync_group_memberships") as mock_sync, \
              patch("main.outline.sync_suspended_status") as mock_suspend:
-            client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            client.post("/outline/sync", headers={"x-api-key": API_KEY})
         mock_build.assert_called_once_with(groups)
         mock_sync.assert_called_once()
         mock_suspend.assert_called_once()
@@ -251,7 +251,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=[]) as mock_build, \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
-            client.get("/outline/sync", headers={"x-api-key": API_KEY})
+            client.post("/outline/sync", headers={"x-api-key": API_KEY})
         assert mock_build.call_count == 1
 
 

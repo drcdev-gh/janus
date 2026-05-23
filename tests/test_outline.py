@@ -253,12 +253,19 @@ class TestSyncGroupMemberships:
         mock_add.assert_not_called()
         mock_del.assert_not_called()
 
-    def test_skips_suspended_outline_user(self):
+    def test_skips_disabled_pocket_user(self):
+        pocket_users = [_pu("alice@example.com", ["Group A"], disabled=True)]
+        outline_users = [_ou("o1", "alice@example.com")]
+        with patch("outline.add_group_membership") as mock_add:
+            sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
+        mock_add.assert_not_called()
+
+    def test_syncs_suspended_outline_user_that_is_active_in_pocket(self):
         pocket_users = [_pu("alice@example.com", ["Group A"])]
         outline_users = [_ou("o1", "alice@example.com", suspended=True)]
         with patch("outline.add_group_membership") as mock_add:
             sync_group_memberships(pocket_users, outline_users, {"Group A": "g1"})
-        mock_add.assert_not_called()
+        mock_add.assert_called_once_with("g1", "o1")
 
     def test_skips_unmatched_outline_user(self):
         pocket_users = [_pu("other@example.com", ["Group A"])]
@@ -330,3 +337,11 @@ class TestSyncSuspendedStatus:
         with patch("outline._post") as mock_post:
             sync_suspended_status(pocket_users, outline_users)
         mock_post.assert_not_called()
+
+    def test_warns_when_no_matching_pocket_user(self):
+        pocket_users = [_pu("other@example.com")]
+        outline_users = [_ou("o1", "alice@example.com", suspended=False)]
+        with patch("outline.logger") as mock_logger, patch("outline._post"):
+            sync_suspended_status(pocket_users, outline_users)
+        mock_logger.warning.assert_called_once()
+        assert "alice@example.com" in mock_logger.warning.call_args[0][1]

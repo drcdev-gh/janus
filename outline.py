@@ -16,8 +16,8 @@ BASE_URL = os.getenv("OUTLINE_API_URL")
 # groups.add_user groups.remove_user
 # users.list users.suspend users.activate
 API_KEY = os.getenv("OUTLINE_API_KEY")
-if not API_KEY:
-    raise RuntimeError("OUTLINE_API_KEY must be set")
+if not BASE_URL or not API_KEY:
+    raise RuntimeError("OUTLINE_API_URL and OUTLINE_API_KEY must be set")
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -184,11 +184,13 @@ def sync_group_memberships(
     """
     pocket_by_email = {u.email: u for u in pocket_users}
     for outline_user in outline_users:
-        if outline_user.suspended:
+        if outline_user.email is None:
             continue
         pocket_user = pocket_by_email.get(outline_user.email)
         if pocket_user is None:
             logger.warning("No PocketID user found for Outline user: %s", outline_user.email)
+            continue
+        if pocket_user.disabled:
             continue
 
         pocket_groups = set(pocket_user.groups)
@@ -222,6 +224,7 @@ def sync_suspended_status(
             continue
         pocket_user = pocket_by_email.get(outline_user.email)
         if pocket_user is None:
+            logger.warning("Outline user %s has no matching PocketID account", outline_user.email)
             continue
         if pocket_user.disabled and not outline_user.suspended:
             logger.info("Suspending user %s", outline_user.email)

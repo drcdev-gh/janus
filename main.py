@@ -59,7 +59,7 @@ def update_pocket_userstore(force_update: bool) -> bool:
         return (
             pocket_userstore is None
             or last_updated_timestamp is None
-            or now - last_updated_timestamp > timedelta(minutes=30)
+            or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS)
         )
 
     if force_update or should_refresh():
@@ -142,11 +142,11 @@ origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_methods=["GET"]
+    allow_methods=["GET", "POST"]
 )
 
 
-@app.get("/outline/sync")
+@app.post("/outline/sync")
 def sync_outline(x_api_key: str = Header(...)):
     if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
