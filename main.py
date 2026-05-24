@@ -42,7 +42,7 @@ API_KEY = os.getenv("API_KEY")
 pocket_userstore = None
 last_updated_timestamp = None
 
-SYNC_INTERVAL_SECONDS = 30 * 60
+SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", 30 * 60))
 
 
 def update_pocket_userstore(force_update: bool) -> bool:
