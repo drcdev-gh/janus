@@ -1,6 +1,7 @@
 import logging
 import os
 import requests
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger("uvicorn")
@@ -15,6 +16,8 @@ HEADERS = {
     "X-API-KEY": API_KEY,
     "Accept": "application/json",
 }
+
+_RETRY_DELAYS = (1, 3)
 
 
 @dataclass
@@ -32,13 +35,31 @@ def _paginate(path: str) -> list[dict]:
     page = 1
     limit = 50
     while True:
-        resp = requests.get(
-            f"{BASE_URL}/api/{path}",
-            headers=HEADERS,
-            params={"pagination[page]": page, "pagination[limit]": limit},
-            timeout=2,
-        )
-        resp.raise_for_status()
+        exc = None
+        for i, backoff in enumerate([0] + list(_RETRY_DELAYS)):
+            if backoff:
+                logger.warning(
+                    "PocketID request failed, retrying in %ds (attempt %d/3): %s",
+                    backoff, i + 1, exc,
+                )
+                time.sleep(backoff)
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/api/{path}",
+                    headers=HEADERS,
+                    params={"pagination[page]": page, "pagination[limit]": limit},
+                    timeout=2,
+                )
+                if resp.status_code >= 500:
+                    exc = requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
+                    continue
+                resp.raise_for_status()
+                exc = None
+                break
+            except (requests.ConnectionError, requests.Timeout) as e:
+                exc = e
+        if exc is not None:
+            raise exc
         body = resp.json()
         items = body["data"]
         last_page = body["pagination"]["totalPages"]

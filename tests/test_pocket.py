@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import patch, MagicMock
+import requests as requests_lib
+from unittest.mock import call, patch, MagicMock
 
 import pocket
 from pocket import PocketUser, _paginate, sync_from_pocket_id, get_unique_groups
@@ -21,8 +22,9 @@ def _raw_user(uid="u1", username="alice", email="alice@example.com",
     }
 
 
-def _page_response(data, total_pages=1):
+def _page_response(data, total_pages=1, status_code=200):
     mock = MagicMock()
+    mock.status_code = status_code
     mock.raise_for_status = MagicMock()
     mock.json.return_value = {
         "data": data,
@@ -61,12 +63,66 @@ class TestPaginate:
         call_url = mock_get.call_args[0][0]
         assert call_url.endswith("/api/user-groups")
 
-    def test_raises_on_http_error(self):
+    def test_4xx_raises_immediately_without_retry(self):
         mock = MagicMock()
-        mock.raise_for_status.side_effect = Exception("HTTP 500")
-        with patch("pocket.requests.get", return_value=mock):
-            with pytest.raises(Exception, match="HTTP 500"):
+        mock.status_code = 403
+        mock.raise_for_status.side_effect = requests_lib.HTTPError("HTTP 403")
+        with patch("pocket.requests.get", return_value=mock) as mock_get, \
+             patch("pocket.time.sleep"):
+            with pytest.raises(requests_lib.HTTPError):
                 _paginate("users")
+        assert mock_get.call_count == 1
+
+    def test_connection_error_is_retried(self):
+        ok = _page_response([])
+        with patch("pocket.requests.get", side_effect=[
+            requests_lib.ConnectionError("refused"),
+            ok,
+        ]), patch("pocket.time.sleep"):
+            result = _paginate("users")
+        assert result == []
+
+    def test_timeout_is_retried(self):
+        ok = _page_response([])
+        with patch("pocket.requests.get", side_effect=[
+            requests_lib.Timeout("timed out"),
+            ok,
+        ]), patch("pocket.time.sleep"):
+            result = _paginate("users")
+        assert result == []
+
+    def test_5xx_is_retried(self):
+        err = MagicMock()
+        err.status_code = 503
+        ok = _page_response([])
+        with patch("pocket.requests.get", side_effect=[err, ok]), \
+             patch("pocket.time.sleep"):
+            result = _paginate("users")
+        assert result == []
+
+    def test_exhausted_retries_raises(self):
+        exc = requests_lib.ConnectionError("refused")
+        with patch("pocket.requests.get", side_effect=exc), \
+             patch("pocket.time.sleep"):
+            with pytest.raises(requests_lib.ConnectionError):
+                _paginate("users")
+
+    def test_retry_sleeps_with_backoff(self):
+        exc = requests_lib.ConnectionError("refused")
+        with patch("pocket.requests.get", side_effect=exc), \
+             patch("pocket.time.sleep") as mock_sleep:
+            with pytest.raises(requests_lib.ConnectionError):
+                _paginate("users")
+        assert mock_sleep.call_args_list == [call(1), call(3)]
+
+    def test_retry_logs_warning(self, caplog):
+        exc = requests_lib.ConnectionError("refused")
+        with patch("pocket.requests.get", side_effect=exc), \
+             patch("pocket.time.sleep"):
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                with pytest.raises(requests_lib.ConnectionError):
+                    _paginate("users")
+        assert caplog.text.count("retrying") == 2
 
 
 # ---------------------------------------------------------------------------

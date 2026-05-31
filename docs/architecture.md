@@ -13,7 +13,7 @@ SSH public keys for `AuthorizedKeysCommand` use. Currently supports Outline and 
 | File | Purpose |
 |---|---|
 | `main.py` | FastAPI app, PocketID user-store cache, scheduled sync loop, route handlers |
-| `pocket.py` | PocketID API client — fetches users and groups via paginated GET |
+| `pocket.py` | PocketID API client — fetches users and groups via paginated GET with retry (3 attempts, 1 s / 3 s backoff) |
 | `outline.py` | Outline API client and full sync logic (groups, memberships, suspended status) |
 | `ssh.py` | SSH public key format validation and PocketID claim matching |
 | `tests/` | pytest suite — `unittest.mock` patches all HTTP; `TestClient` for routes |
@@ -67,10 +67,11 @@ suspended: bool
 `main.py` holds a module-level `pocket_userstore: list[PocketUser] | None` and
 `last_updated_timestamp`. `update_pocket_userstore(force_update)` refreshes the store
 if stale (older than `SYNC_INTERVAL_SECONDS`) or if forced. The `/ssh/validate` endpoint
-uses the cache; `/outline/sync` always forces a refresh.
+uses the cache read-only; `/outline/sync` always forces a refresh.
 
-**Note:** the cache is not thread-safe. Safe with the default single Uvicorn worker;
-requires a lock if running with multiple workers.
+All reads and writes of `pocket_userstore` and `last_updated_timestamp` are protected by
+`_userstore_lock` (a `threading.Lock`). The slow `pocket.sync_from_pocket_id()` call is
+always made outside the lock so SSH validation is never blocked by an in-progress sync.
 
 ---
 
@@ -92,7 +93,7 @@ fires ~3 hours after startup.
 
 ### `GET /health`
 - Unauthenticated
-- Three checks: `pocketid` (TCP reachability), `outline` (TCP reachability), `last_sync` (outcome of last sync)
+- Four checks: `pocketid` (TCP reachability), `outline` (TCP reachability), `last_sync` (outcome of last sync), `ssh_cache` (whether the pocket_userstore is fresh enough for SSH logins)
 - TCP ping opens a socket connection to the host/port from `POCKETID_API_URL` / `OUTLINE_API_URL` — no HTTP request, no API key used
 - Response cached for 60 seconds to avoid hammering upstream hosts
 - HTTP 200 when all checks are `"ok"`, 503 if any check fails; body always includes `checks` detail
