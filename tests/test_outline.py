@@ -412,3 +412,81 @@ class TestLogging:
         with caplog.at_level("INFO", logger="uvicorn"):
             sync_suspended_status(pocket_users, outline_users)
         assert "User status: 0 suspended, 0 reactivated" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# DRY_RUN mode
+# ---------------------------------------------------------------------------
+
+class TestDryRun:
+    def setup_method(self):
+        outline.DRY_RUN = True
+
+    def teardown_method(self):
+        outline.DRY_RUN = False
+
+    def test_create_outline_group_skips_api(self):
+        with patch("outline._post") as mock_post:
+            result = outline.create_outline_group("TestGroup")
+        mock_post.assert_not_called()
+        assert result == {}
+
+    def test_delete_outline_group_skips_api(self):
+        with patch("outline._post") as mock_post:
+            outline.delete_outline_group("g1")
+        mock_post.assert_not_called()
+
+    def test_add_group_membership_skips_api(self):
+        with patch("outline._post") as mock_post:
+            outline.add_group_membership("g1", "u1")
+        mock_post.assert_not_called()
+
+    def test_delete_group_membership_skips_api(self):
+        with patch("outline._post") as mock_post:
+            outline.delete_group_membership("g1", "u1")
+        mock_post.assert_not_called()
+
+    def test_sync_suspended_status_skips_suspend(self):
+        pocket_users = [_pu("a@b.com", disabled=True)]
+        outline_users = [_ou("o1", "a@b.com", suspended=False)]
+        with patch("outline._post") as mock_post:
+            sync_suspended_status(pocket_users, outline_users)
+        mock_post.assert_not_called()
+
+    def test_sync_suspended_status_skips_reactivate(self):
+        pocket_users = [_pu("a@b.com")]
+        outline_users = [_ou("o1", "a@b.com", suspended=True)]
+        with patch("outline._post") as mock_post:
+            sync_suspended_status(pocket_users, outline_users)
+        mock_post.assert_not_called()
+
+    def test_create_missing_groups_counts_intended_creations(self, caplog):
+        with caplog.at_level("INFO", logger="uvicorn"):
+            create_missing_groups({"New"}, [])
+        assert "Groups: 1 created (dry run)" in caplog.text
+
+    def test_delete_extra_groups_logs_dry_run(self, caplog):
+        with caplog.at_level("INFO", logger="uvicorn"):
+            delete_extra_groups(set(), [{"id": "g1", "name": "Gone"}])
+        assert "Groups: 1 deleted (dry run)" in caplog.text
+
+    def test_sync_group_memberships_logs_dry_run(self, caplog):
+        pocket_users = [_pu("a@b.com", groups=["Eng"])]
+        outline_users = [_ou("o1", "a@b.com", groups=[])]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_group_memberships(pocket_users, outline_users, {"Eng": "g1"})
+        assert "Group memberships: 1 added, 0 removed (dry run)" in caplog.text
+
+    def test_sync_suspended_status_logs_dry_run(self, caplog):
+        pocket_users = [_pu("a@b.com", disabled=True)]
+        outline_users = [_ou("o1", "a@b.com", suspended=False)]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_suspended_status(pocket_users, outline_users)
+        assert "User status: 1 suspended, 0 reactivated (dry run)" in caplog.text
+
+    def test_per_operation_logs_still_fire(self, caplog):
+        pocket_users = [_pu("a@b.com", groups=["Eng"])]
+        outline_users = [_ou("o1", "a@b.com", groups=[])]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_group_memberships(pocket_users, outline_users, {"Eng": "g1"})
+        assert "Adding a@b.com to group Eng" in caplog.text

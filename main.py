@@ -37,6 +37,7 @@ for url_var in ("POCKETID_API_URL", "OUTLINE_API_URL"):
         sys.exit(1)
 
 API_KEY = os.getenv("API_KEY")
+DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
 # Quick caching mechanism for the PocketID user store.
 # TODO: not thread-safe — use a threading.Lock or cachetools.TTLCache if running
@@ -182,13 +183,17 @@ async def lifespan(app: FastAPI):
         logger.exception("Startup sync failed")
         last_sync_error = str(e)
 
-    task = asyncio.create_task(_scheduled_sync(last_force_sync=startup_time))
-    yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    if DRY_RUN:
+        logger.warning("DRY RUN mode enabled — no Outline changes will be made, no periodic syncs will run")
+        yield
+    else:
+        task = asyncio.create_task(_scheduled_sync(last_force_sync=startup_time))
+        yield
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -246,6 +251,9 @@ def validate_ssh_login(pubkey: str = Query(max_length=8192), x_api_key: str = He
     if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
+
+    if DRY_RUN:
+        return PlainTextResponse("", status_code=204)
 
     update_pocket_userstore(False)
     key = ssh.validate_pubkey(pubkey, pocket_userstore)

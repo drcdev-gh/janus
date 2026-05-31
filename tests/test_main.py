@@ -568,3 +568,57 @@ class TestHealthEndpoint:
             main.last_sync_error = None  # simulate recovery
             response = client.get("/health")  # should still return cached 503
         assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# DRY_RUN mode (main.py)
+# ---------------------------------------------------------------------------
+
+class TestDryRunMain:
+    def setup_method(self):
+        main.DRY_RUN = True
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def teardown_method(self):
+        main.DRY_RUN = False
+
+    def test_ssh_validate_returns_204_immediately(self):
+        response = client.get("/ssh/validate",
+                              params={"pubkey": "ssh-ed25519 AAAA"},
+                              headers={"x-api-key": API_KEY})
+        assert response.status_code == 204
+        assert response.text == ""
+
+    def test_ssh_validate_skips_pocket_lookup(self):
+        with patch("main.pocket.sync_from_pocket_id") as mock_sync:
+            client.get("/ssh/validate",
+                       params={"pubkey": "ssh-ed25519 AAAA"},
+                       headers={"x-api-key": API_KEY})
+        mock_sync.assert_not_called()
+
+    def test_ssh_validate_still_checks_api_key(self):
+        response = client.get("/ssh/validate",
+                              params={"pubkey": "ssh-ed25519 AAAA"},
+                              headers={"x-api-key": "wrong"})
+        assert response.status_code == 403
+
+    def test_lifespan_skips_scheduled_sync(self):
+        with patch("main._run_sync", return_value=None), \
+             patch("main._scheduled_sync") as mock_sched:
+            with TestClient(main.app):
+                pass
+        mock_sched.assert_not_called()
+
+    def test_lifespan_still_runs_startup_sync(self):
+        with patch("main._run_sync", return_value=None) as mock_sync:
+            with TestClient(main.app):
+                pass
+        mock_sync.assert_called_once_with(force=True)
+
+    def test_lifespan_logs_dry_run_warning(self, caplog):
+        with patch("main._run_sync", return_value=None):
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                with TestClient(main.app):
+                    pass
+        assert "DRY RUN" in caplog.text

@@ -33,6 +33,7 @@ SSH public keys for `AuthorizedKeysCommand` use. Currently supports Outline and 
 | `API_KEY` | Shared secret for authenticating requests to janus |
 | `SYNC_INTERVAL_SECONDS` | Normal background sync interval (default: 1800) |
 | `FORCE_SYNC_INTERVAL_SECONDS` | Force sync interval within the background task (default: 10800) |
+| `DRY_RUN` | Set to `1`, `true`, or `yes` to skip all Outline write operations and run only the startup sync |
 
 Both `*_API_URL` values are validated at startup — the process exits if either is not `https://`.
 
@@ -139,6 +140,12 @@ Steps 4–5 each return the updated group list so the pipeline never re-fetches 
 3. Return the matched key string on success, `None` on failure
 
 ---
+
+## Dry-run mode
+
+When `DRY_RUN` is set, janus runs a single startup sync (fetching real data from PocketID and Outline) but skips all Outline write operations — group creates/deletes, membership changes, and user suspend/reactivate. Per-operation log lines still fire so the operator can see what would change; summary lines append `(dry run)`. No `_scheduled_sync` task is started. The `/ssh/validate` endpoint returns HTTP 204 immediately without performing any validation.
+
+`DRY_RUN` is a module-level boolean in both `outline.py` and `main.py`, set once at import time from the env var.
 
 ## Logging
 

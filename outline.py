@@ -25,6 +25,8 @@ HEADERS = {
     "Accept": "application/json",
 }
 
+DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
+
 
 @dataclass
 class OutlineUser:
@@ -95,19 +97,27 @@ def build_group_name_to_id(groups: list[dict]) -> dict[str, str]:
 
 
 def create_outline_group(name: str) -> dict:
+    if DRY_RUN:
+        return {}
     body = _post("groups.create", {"name": name, "externalId": name})
     return body.get("data", {})
 
 
 def delete_outline_group(group_id: str) -> None:
+    if DRY_RUN:
+        return
     _post("groups.delete", {"id": group_id})
 
 
 def add_group_membership(group_id: str, user_id: str) -> None:
+    if DRY_RUN:
+        return
     _post("groups.add_user", {"id": group_id, "userId": user_id})
 
 
 def delete_group_membership(group_id: str, user_id: str) -> None:
+    if DRY_RUN:
+        return
     _post("groups.remove_user", {"id": group_id, "userId": user_id})
 
 
@@ -153,11 +163,14 @@ def create_missing_groups(pocket_groups: set[str], groups: list[dict]) -> list[d
     for name in pocket_groups:
         if name not in existing:
             logger.info("Creating group %s", name)
-            new_group = create_outline_group(name)
-            if new_group:
-                updated.append(new_group)
+            if DRY_RUN:
                 created += 1
-    logger.info("Groups: %d created", created)
+            else:
+                new_group = create_outline_group(name)
+                if new_group:
+                    updated.append(new_group)
+                    created += 1
+    logger.info("Groups: %d created%s", created, " (dry run)" if DRY_RUN else "")
     return updated
 
 
@@ -176,7 +189,7 @@ def delete_extra_groups(pocket_groups: set[str], groups: list[dict]) -> list[dic
             logger.info("Deleting group %s", group["name"])
             delete_outline_group(group["id"])
             deleted += 1
-    logger.info("Groups: %d deleted", deleted)
+    logger.info("Groups: %d deleted%s", deleted, " (dry run)" if DRY_RUN else "")
     return remaining
 
 
@@ -222,7 +235,7 @@ def sync_group_memberships(
             logger.info("Removing %s from group %s", outline_user.email, group_name)
             delete_group_membership(group_id, outline_user.id)
             removed += 1
-    logger.info("Group memberships: %d added, %d removed", added, removed)
+    logger.info("Group memberships: %d added, %d removed%s", added, removed, " (dry run)" if DRY_RUN else "")
 
 
 def sync_suspended_status(
@@ -241,10 +254,13 @@ def sync_suspended_status(
             continue
         if pocket_user.disabled and not outline_user.suspended:
             logger.info("Suspending user %s", outline_user.email)
-            _post("users.suspend", {"id": outline_user.id})
+            if not DRY_RUN:
+                _post("users.suspend", {"id": outline_user.id})
             suspended += 1
         elif not pocket_user.disabled and outline_user.suspended:
             logger.info("Reactivating user %s", outline_user.email)
-            _post("users.activate", {"id": outline_user.id})
+            if not DRY_RUN:
+                _post("users.activate", {"id": outline_user.id})
             reactivated += 1
-    logger.info("User status: %d suspended, %d reactivated", suspended, reactivated)
+    _dry = " (dry run)" if DRY_RUN else ""
+    logger.info("User status: %d suspended, %d reactivated%s", suspended, reactivated, _dry)
