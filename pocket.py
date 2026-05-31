@@ -1,6 +1,9 @@
+import logging
 import os
 import requests
 from dataclasses import dataclass
+
+logger = logging.getLogger("uvicorn")
 
 BASE_URL = os.getenv("POCKETID_API_URL")
 API_KEY = os.getenv("POCKETID_API_KEY")
@@ -49,7 +52,7 @@ def _paginate(path: str) -> list[dict]:
 
 
 def sync_from_pocket_id() -> list[PocketUser]:
-    return [
+    users = [
         PocketUser(
             username=u["username"],
             user_id=u["id"],
@@ -60,6 +63,8 @@ def sync_from_pocket_id() -> list[PocketUser]:
         )
         for u in _paginate("users")
     ]
+    logger.info("Fetched %d users from PocketID", len(users))
+    return users
 
 
 def get_unique_groups() -> set[str]:
@@ -68,4 +73,6 @@ def get_unique_groups() -> set[str]:
     Using /api/user-groups is more correct than deriving groups from user records
     because it includes groups that exist but currently have no members.
     """
-    return {g["name"] for g in _paginate("user-groups")}
+    groups = {g["name"] for g in _paginate("user-groups")}
+    logger.info("Found %d groups in PocketID", len(groups))
+    return groups

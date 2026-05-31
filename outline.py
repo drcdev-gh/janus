@@ -136,7 +136,9 @@ def build_outline_user_store(groups: list[dict]) -> list[OutlineUser]:
                 logger.warning("User %s in group %s not found in user list",
                                user_id, g["name"])
 
-    return list(store.values())
+    result = list(store.values())
+    logger.info("Fetched %d users from Outline across %d groups", len(result), len(groups))
+    return result
 
 
 def create_missing_groups(pocket_groups: set[str], groups: list[dict]) -> list[dict]:
@@ -147,12 +149,15 @@ def create_missing_groups(pocket_groups: set[str], groups: list[dict]) -> list[d
     """
     existing = {g["name"] for g in groups}
     updated = list(groups)
+    created = 0
     for name in pocket_groups:
         if name not in existing:
             logger.info("Creating group %s", name)
             new_group = create_outline_group(name)
             if new_group:
                 updated.append(new_group)
+                created += 1
+    logger.info("Groups: %d created", created)
     return updated
 
 
@@ -163,12 +168,15 @@ def delete_extra_groups(pocket_groups: set[str], groups: list[dict]) -> list[dic
     do not need to re-fetch from the API.
     """
     remaining = []
+    deleted = 0
     for group in groups:
         if group["name"] in pocket_groups:
             remaining.append(group)
         else:
             logger.info("Deleting group %s", group["name"])
             delete_outline_group(group["id"])
+            deleted += 1
+    logger.info("Groups: %d deleted", deleted)
     return remaining
 
 
@@ -183,6 +191,7 @@ def sync_group_memberships(
     is O(1) rather than O(n).
     """
     pocket_by_email = {u.email: u for u in pocket_users}
+    added = removed = 0
     for outline_user in outline_users:
         if outline_user.email is None:
             continue
@@ -203,6 +212,7 @@ def sync_group_memberships(
                 continue
             logger.info("Adding %s to group %s", outline_user.email, group_name)
             add_group_membership(group_id, outline_user.id)
+            added += 1
 
         for group_name in outline_groups - pocket_groups:
             group_id = group_name_to_id.get(group_name)
@@ -211,6 +221,8 @@ def sync_group_memberships(
                 continue
             logger.info("Removing %s from group %s", outline_user.email, group_name)
             delete_group_membership(group_id, outline_user.id)
+            removed += 1
+    logger.info("Group memberships: %d added, %d removed", added, removed)
 
 
 def sync_suspended_status(
@@ -219,6 +231,7 @@ def sync_suspended_status(
 ) -> None:
     """Suspend Outline users whose PocketID account is disabled; reactivate those re-enabled."""
     pocket_by_email = {u.email: u for u in pocket_users}
+    suspended = reactivated = 0
     for outline_user in outline_users:
         if outline_user.email is None:
             continue
@@ -229,6 +242,9 @@ def sync_suspended_status(
         if pocket_user.disabled and not outline_user.suspended:
             logger.info("Suspending user %s", outline_user.email)
             _post("users.suspend", {"id": outline_user.id})
+            suspended += 1
         elif not pocket_user.disabled and outline_user.suspended:
             logger.info("Reactivating user %s", outline_user.email)
             _post("users.activate", {"id": outline_user.id})
+            reactivated += 1
+    logger.info("User status: %d suspended, %d reactivated", suspended, reactivated)

@@ -140,6 +140,16 @@ Steps 4–5 each return the updated group list so the pipeline never re-fetches 
 
 ---
 
+## Logging
+
+Every module logs to `logging.getLogger("uvicorn")`.
+
+Key log events during a sync:
+- `pocket.py`: "Fetched N users from PocketID", "Found N groups in PocketID"
+- `outline.py`: "Fetched N users from Outline across N groups", per-operation lines for each group/membership/status change, then summary lines: "Groups: N created", "Groups: N deleted", "Group memberships: N added, N removed", "User status: N suspended, N reactivated"
+- `main.py`: sync start/complete/skipped/failed at each trigger point (startup, scheduled, manual)
+- `ssh.py`: key validation outcomes (auth granted/denied, invalid format)
+
 ## Test patterns
 
 - `tests/conftest.py` sets all required env vars before any module import (modules read env at import time)

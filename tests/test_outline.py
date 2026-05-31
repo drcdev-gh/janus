@@ -345,3 +345,70 @@ class TestSyncSuspendedStatus:
             sync_suspended_status(pocket_users, outline_users)
         mock_logger.warning.assert_called_once()
         assert "alice@example.com" in mock_logger.warning.call_args[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Logging summaries
+# ---------------------------------------------------------------------------
+
+class TestLogging:
+    def test_build_outline_user_store_logs_fetch_count(self, caplog):
+        users = [{"id": "u1", "name": "Alice", "email": "a@b.com", "isSuspended": False}]
+        groups = [{"id": "g1", "name": "Eng"}]
+        with patch("outline.fetch_outline_users", return_value=users), \
+             patch("outline._fetch_group_members", return_value=[]):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                build_outline_user_store(groups)
+        assert "Fetched 1 users from Outline across 1 groups" in caplog.text
+
+    def test_create_missing_groups_logs_created_count(self, caplog):
+        with patch("outline.create_outline_group", return_value={"id": "g2", "name": "New"}):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                create_missing_groups({"Existing", "New"}, [{"id": "g1", "name": "Existing"}])
+        assert "Groups: 1 created" in caplog.text
+
+    def test_create_missing_groups_logs_zero(self, caplog):
+        with caplog.at_level("INFO", logger="uvicorn"):
+            create_missing_groups({"Existing"}, [{"id": "g1", "name": "Existing"}])
+        assert "Groups: 0 created" in caplog.text
+
+    def test_delete_extra_groups_logs_deleted_count(self, caplog):
+        with patch("outline.delete_outline_group"):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                delete_extra_groups({"Keep"}, [{"id": "g1", "name": "Keep"}, {"id": "g2", "name": "Gone"}])
+        assert "Groups: 1 deleted" in caplog.text
+
+    def test_delete_extra_groups_logs_zero(self, caplog):
+        with caplog.at_level("INFO", logger="uvicorn"):
+            delete_extra_groups({"Keep"}, [{"id": "g1", "name": "Keep"}])
+        assert "Groups: 0 deleted" in caplog.text
+
+    def test_sync_group_memberships_logs_summary(self, caplog):
+        pocket_users = [_pu("a@b.com", groups=["Eng"])]
+        outline_users = [_ou("o1", "a@b.com", groups=["Old"])]
+        with patch("outline.add_group_membership"), patch("outline.delete_group_membership"):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                sync_group_memberships(pocket_users, outline_users, {"Eng": "g1", "Old": "g2"})
+        assert "Group memberships: 1 added, 1 removed" in caplog.text
+
+    def test_sync_group_memberships_logs_zero(self, caplog):
+        pocket_users = [_pu("a@b.com", groups=["Eng"])]
+        outline_users = [_ou("o1", "a@b.com", groups=["Eng"])]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_group_memberships(pocket_users, outline_users, {"Eng": "g1"})
+        assert "Group memberships: 0 added, 0 removed" in caplog.text
+
+    def test_sync_suspended_status_logs_summary(self, caplog):
+        pocket_users = [_pu("a@b.com", disabled=True), _pu("b@b.com")]
+        outline_users = [_ou("o1", "a@b.com", suspended=False), _ou("o2", "b@b.com", suspended=True)]
+        with patch("outline._post"):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                sync_suspended_status(pocket_users, outline_users)
+        assert "User status: 1 suspended, 1 reactivated" in caplog.text
+
+    def test_sync_suspended_status_logs_zero(self, caplog):
+        pocket_users = [_pu("a@b.com")]
+        outline_users = [_ou("o1", "a@b.com", suspended=False)]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_suspended_status(pocket_users, outline_users)
+        assert "User status: 0 suspended, 0 reactivated" in caplog.text

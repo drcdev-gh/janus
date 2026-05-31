@@ -137,3 +137,35 @@ class TestGetUniqueGroups:
         with patch("pocket._paginate", return_value=raw):
             result = get_unique_groups()
         assert result == {"Group A"}
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+class TestLogging:
+    def test_sync_from_pocket_id_logs_user_count(self, caplog):
+        raw = [_raw_user("u1"), _raw_user("u2")]
+        with patch("pocket._paginate", return_value=raw):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                sync_from_pocket_id()
+        assert "Fetched 2 users from PocketID" in caplog.text
+
+    def test_sync_from_pocket_id_logs_zero(self, caplog):
+        with patch("pocket._paginate", return_value=[]):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                sync_from_pocket_id()
+        assert "Fetched 0 users from PocketID" in caplog.text
+
+    def test_get_unique_groups_logs_group_count(self, caplog):
+        raw = [{"id": "g1", "name": "A"}, {"id": "g2", "name": "B"}]
+        with patch("pocket._paginate", return_value=raw):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                get_unique_groups()
+        assert "Found 2 groups in PocketID" in caplog.text
+
+    def test_get_unique_groups_logs_zero(self, caplog):
+        with patch("pocket._paginate", return_value=[]):
+            with caplog.at_level("INFO", logger="uvicorn"):
+                get_unique_groups()
+        assert "Found 0 groups in PocketID" in caplog.text
