@@ -2,12 +2,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from datetime import datetime, timedelta, timezone
 import hmac
 import logging
+import socket
 import sys
 import os
+from urllib.parse import urlparse
 
 import pocket
 import outline
@@ -44,6 +46,19 @@ last_updated_timestamp = None
 
 SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", 30 * 60))
 FORCE_SYNC_INTERVAL_SECONDS = int(os.getenv("FORCE_SYNC_INTERVAL_SECONDS", 3 * 60 * 60))
+HEALTH_CACHE_SECONDS = 60
+
+last_sync_error: str | None = None
+_health_cache: dict | None = None
+_health_cache_time: datetime | None = None
+
+
+def _ping_host(url: str, timeout: float = 3.0) -> None:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    with socket.create_connection((host, port), timeout=timeout):
+        pass
 
 
 def update_pocket_userstore(force_update: bool) -> bool:
@@ -132,32 +147,40 @@ async def _scheduled_sync(last_force_sync: datetime):
             last_force = now
         label = "force" if force else "normal"
         logger.info("Scheduled %s sync starting", label)
+        global last_sync_error
         try:
             error = await asyncio.get_running_loop().run_in_executor(
                 None, lambda f=force: _run_sync(force=f)
             )
             if error:
                 logger.warning("Scheduled %s sync skipped: %s", label, error)
+                last_sync_error = error
             else:
                 logger.info("Scheduled %s sync complete", label)
-        except Exception:
+                last_sync_error = None
+        except Exception as e:
             logger.exception("Scheduled %s sync failed", label)
+            last_sync_error = str(e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     startup_time = datetime.now(timezone.utc)
     logger.info("Startup sync starting")
+    global last_sync_error
     try:
         error = await asyncio.get_running_loop().run_in_executor(
             None, lambda: _run_sync(force=True)
         )
         if error:
             logger.warning("Startup sync skipped: %s", error)
+            last_sync_error = error
         else:
             logger.info("Startup sync complete")
-    except Exception:
+            last_sync_error = None
+    except Exception as e:
         logger.exception("Startup sync failed")
+        last_sync_error = str(e)
 
     task = asyncio.create_task(_scheduled_sync(last_force_sync=startup_time))
     yield
@@ -176,6 +199,32 @@ app.add_middleware(
     allow_origins=origins,
     allow_methods=["GET", "POST"]
 )
+
+
+@app.get("/health")
+def health():
+    global _health_cache, _health_cache_time
+    now = datetime.now(timezone.utc)
+    if _health_cache is not None and _health_cache_time is not None:
+        if (now - _health_cache_time).total_seconds() < HEALTH_CACHE_SECONDS:
+            return JSONResponse(_health_cache, status_code=200 if _health_cache["status"] == "healthy" else 503)
+
+    checks = {}
+    for name, url in [("pocketid", os.getenv("POCKETID_API_URL")), ("outline", os.getenv("OUTLINE_API_URL"))]:
+        try:
+            _ping_host(url)
+            checks[name] = "ok"
+        except Exception as e:
+            checks[name] = str(e)
+
+    checks["last_sync"] = "ok" if last_sync_error is None else last_sync_error
+
+    result = {
+        "status": "healthy" if all(v == "ok" for v in checks.values()) else "unhealthy",
+        "checks": checks,
+    }
+    _health_cache, _health_cache_time = result, now
+    return JSONResponse(result, status_code=200 if result["status"] == "healthy" else 503)
 
 
 @app.post("/outline/force-sync")

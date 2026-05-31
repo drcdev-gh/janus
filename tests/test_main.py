@@ -1,5 +1,6 @@
 import hmac
 import pytest
+import socket
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -426,3 +427,144 @@ class TestSshValidateEndpoint:
                               params={"pubkey": oversized},
                               headers={"x-api-key": API_KEY})
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# _ping_host
+# ---------------------------------------------------------------------------
+
+class TestPingHost:
+    def test_opens_tcp_connection_to_https_host(self):
+        with patch("socket.create_connection", return_value=MagicMock()) as mock_conn:
+            main._ping_host("https://example.com")
+        mock_conn.assert_called_once_with(("example.com", 443), timeout=3.0)
+
+    def test_uses_explicit_port_when_present(self):
+        with patch("socket.create_connection", return_value=MagicMock()) as mock_conn:
+            main._ping_host("https://example.com:8443")
+        mock_conn.assert_called_once_with(("example.com", 8443), timeout=3.0)
+
+    def test_raises_on_connection_failure(self):
+        with patch("socket.create_connection", side_effect=OSError("refused")):
+            with pytest.raises(OSError):
+                main._ping_host("https://example.com")
+
+
+# ---------------------------------------------------------------------------
+# last_sync_error tracking
+# ---------------------------------------------------------------------------
+
+class TestLastSyncError:
+    def setup_method(self):
+        main.last_sync_error = None
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def test_startup_clears_error_on_success(self):
+        main.last_sync_error = "previous error"
+        with patch("main._run_sync", return_value=None):
+            with TestClient(main.app):
+                pass
+        assert main.last_sync_error is None
+
+    def test_startup_sets_error_on_skip(self):
+        with patch("main._run_sync", return_value="empty Pocket user store"):
+            with TestClient(main.app):
+                pass
+        assert main.last_sync_error == "empty Pocket user store"
+
+    def test_startup_sets_error_on_exception(self):
+        with patch("main._run_sync", side_effect=Exception("API down")):
+            with TestClient(main.app):
+                pass
+        assert main.last_sync_error == "API down"
+
+
+# ---------------------------------------------------------------------------
+# GET /health
+# ---------------------------------------------------------------------------
+
+class TestHealthEndpoint:
+    def setup_method(self):
+        main.last_sync_error = None
+        main._health_cache = None
+        main._health_cache_time = None
+
+    def test_healthy_when_all_checks_pass(self):
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "healthy",
+            "checks": {"pocketid": "ok", "outline": "ok", "last_sync": "ok"},
+        }
+
+    def test_unhealthy_when_pocketid_unreachable(self):
+        pocket_url = "https://pocket.test"
+        def side_effect(url, **kwargs):
+            if url == pocket_url:
+                raise OSError("connection refused")
+        with patch("main._ping_host", side_effect=side_effect):
+            response = client.get("/health")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        assert data["checks"]["pocketid"] == "connection refused"
+        assert data["checks"]["outline"] == "ok"
+        assert data["checks"]["last_sync"] == "ok"
+
+    def test_unhealthy_when_outline_unreachable(self):
+        outline_url = "https://outline.test"
+        def side_effect(url, **kwargs):
+            if url == outline_url:
+                raise OSError("timeout")
+        with patch("main._ping_host", side_effect=side_effect):
+            response = client.get("/health")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["checks"]["pocketid"] == "ok"
+        assert data["checks"]["outline"] == "timeout"
+
+    def test_unhealthy_when_last_sync_failed(self):
+        main.last_sync_error = "empty Pocket user store"
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.status_code == 503
+        assert response.json()["checks"]["last_sync"] == "empty Pocket user store"
+
+    def test_unhealthy_shows_all_failing_checks(self):
+        main.last_sync_error = "API timeout"
+        with patch("main._ping_host", side_effect=OSError("refused")):
+            response = client.get("/health")
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        assert data["checks"]["pocketid"] != "ok"
+        assert data["checks"]["outline"] != "ok"
+        assert data["checks"]["last_sync"] == "API timeout"
+
+    def test_cache_prevents_second_ping_within_60s(self):
+        with patch("main._ping_host") as mock_ping:
+            client.get("/health")
+            client.get("/health")
+        assert mock_ping.call_count == 2  # 2 pings on first request only
+
+    def test_cache_returns_same_body_on_second_request(self):
+        with patch("main._ping_host"):
+            r1 = client.get("/health")
+            r2 = client.get("/health")
+        assert r1.json() == r2.json()
+
+    def test_cache_expires_after_60s(self):
+        with patch("main._ping_host") as mock_ping:
+            client.get("/health")
+            main._health_cache_time = datetime.now(timezone.utc) - timedelta(seconds=61)
+            client.get("/health")
+        assert mock_ping.call_count == 4  # 2 pings × 2 requests
+
+    def test_cached_unhealthy_response_returns_503(self):
+        main.last_sync_error = "sync failed"
+        with patch("main._ping_host"):
+            client.get("/health")  # populates cache as unhealthy
+            main.last_sync_error = None  # simulate recovery
+            response = client.get("/health")  # should still return cached 503
+        assert response.status_code == 503

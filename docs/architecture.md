@@ -89,6 +89,14 @@ fires ~3 hours after startup.
 
 ## Routes
 
+### `GET /health`
+- Unauthenticated
+- Three checks: `pocketid` (TCP reachability), `outline` (TCP reachability), `last_sync` (outcome of last sync)
+- TCP ping opens a socket connection to the host/port from `POCKETID_API_URL` / `OUTLINE_API_URL` — no HTTP request, no API key used
+- Response cached for 60 seconds to avoid hammering upstream hosts
+- HTTP 200 when all checks are `"ok"`, 503 if any check fails; body always includes `checks` detail
+- `last_sync_error` is set by the startup sync and the background task; `None` = last sync succeeded
+
 ### `POST /outline/force-sync`
 - Auth: `x-api-key` header (constant-time comparison via `hmac.compare_digest`)
 - Forces a full PocketID fetch and always runs the Outline sync pipeline regardless of whether data changed
