@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import hmac
 import logging
 import socket
+import threading
 import sys
 import os
 from urllib.parse import urlparse
@@ -39,11 +40,9 @@ for url_var in ("POCKETID_API_URL", "OUTLINE_API_URL"):
 API_KEY = os.getenv("API_KEY")
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
-# Quick caching mechanism for the PocketID user store.
-# TODO: not thread-safe — use a threading.Lock or cachetools.TTLCache if running
-# with multiple Uvicorn workers.
 pocket_userstore = None
 last_updated_timestamp = None
+_userstore_lock = threading.Lock()
 
 SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", 30 * 60))
 FORCE_SYNC_INTERVAL_SECONDS = int(os.getenv("FORCE_SYNC_INTERVAL_SECONDS", 3 * 60 * 60))
@@ -69,22 +68,25 @@ def update_pocket_userstore(force_update: bool) -> bool:
     """
     global pocket_userstore, last_updated_timestamp
 
-    has_changed = False
     now = datetime.now(timezone.utc)
 
-    def should_refresh():
-        return (
-            pocket_userstore is None
-            or last_updated_timestamp is None
-            or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS)
-        )
+    with _userstore_lock:
+        current_store = pocket_userstore
+        current_ts = last_updated_timestamp
 
-    if force_update or should_refresh():
-        new_userstore = pocket.sync_from_pocket_id()
+    stale = (
+        current_store is None
+        or current_ts is None
+        or now - current_ts > timedelta(seconds=SYNC_INTERVAL_SECONDS)
+    )
 
-        if new_userstore != pocket_userstore:
-            has_changed = True
+    if not (force_update or stale):
+        return False
 
+    new_userstore = pocket.sync_from_pocket_id()
+
+    with _userstore_lock:
+        has_changed = new_userstore != pocket_userstore
         pocket_userstore = new_userstore
         last_updated_timestamp = now
 
@@ -224,10 +226,9 @@ def health():
 
     checks["last_sync"] = "ok" if last_sync_error is None else last_sync_error
 
-    ssh_stale = (
-        last_updated_timestamp is None
-        or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1)
-    )
+    with _userstore_lock:
+        cache_ts = last_updated_timestamp
+    ssh_stale = cache_ts is None or now - cache_ts > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1)
     checks["ssh_cache"] = "stale" if ssh_stale else "ok"
 
     result = {
@@ -261,15 +262,16 @@ def validate_ssh_login(pubkey: str = Query(max_length=8192), x_api_key: str = He
     if DRY_RUN:
         return PlainTextResponse("", status_code=204)
 
+    with _userstore_lock:
+        ts = last_updated_timestamp
+        store = pocket_userstore
+
     now = datetime.now(timezone.utc)
-    if (
-        last_updated_timestamp is None
-        or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1)
-    ):
+    if ts is None or now - ts > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1):
         logger.warning("SSH login rejected: user cache is stale or empty")
         return PlainTextResponse("", status_code=204)
 
-    key = ssh.validate_pubkey(pubkey, pocket_userstore)
+    key = ssh.validate_pubkey(pubkey, store)
     if key is None:
         return PlainTextResponse("", status_code=204)
     return PlainTextResponse(key + "\n")
