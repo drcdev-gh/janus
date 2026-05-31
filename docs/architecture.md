@@ -118,18 +118,26 @@ When `force=False`, `_run_sync` returns early (without touching Outline) if
 `update_pocket_userstore` reports no change. When `force=True` (startup, 3-hour tick,
 `/outline/force-sync`), the full pipeline always runs.
 
+All safety checks run before any Outline write. The pipeline aborts (returning an error
+string, never raising) if any check fails:
 
+- PocketID cache is stale (older than `SYNC_INTERVAL_SECONDS * 1.1`)
+- PocketID returned an empty user list
+- PocketID returned an empty group list
+- Outline user count exceeds PocketID user count (indicates a truncated PocketID fetch)
 
-1. Force-refresh PocketID user store
-2. Fetch authoritative group list from PocketID (`/api/user-groups`)
+1. Force-refresh PocketID user store; verify cache freshness and non-empty users
+2. Fetch authoritative group list from PocketID (`/api/user-groups`); verify non-empty
 3. Fetch Outline group list
-4. `create_missing_groups` — create groups in Outline that exist in PocketID but not Outline
-5. `delete_extra_groups` — delete groups in Outline that no longer exist in PocketID
-6. `build_outline_user_store` — fetch all Outline users and their current group memberships
+4. `build_outline_user_store` — fetch all Outline users and current memberships; verify count ≤ PocketID count
+5. `create_missing_groups` — create groups in Outline that exist in PocketID but not Outline
+6. `delete_extra_groups` — delete groups in Outline that no longer exist in PocketID
 7. `sync_group_memberships` — add/remove memberships to match PocketID (matched by email)
 8. `sync_suspended_status` — suspend/reactivate Outline users based on PocketID `disabled` flag
 
-Steps 4–5 each return the updated group list so the pipeline never re-fetches from the API.
+Steps 5–6 each return the updated group list so the pipeline never re-fetches from the API.
+The `outline_users` result from step 4 (pre-write) is reused in steps 7–8: new groups start
+empty so nothing is missed, and deleted groups are excluded via `group_name_to_id`.
 
 ---
 

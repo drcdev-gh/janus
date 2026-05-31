@@ -97,12 +97,21 @@ def _run_sync(force: bool = False) -> str | None:
     """Run the full Outline sync.
 
     When force=False, skips the Outline sync if PocketID data is unchanged.
-    Returns None on success, or an error message if the sync was skipped
-    due to an empty PocketID store or group list. Raises on API errors.
+    Returns None on success, or an error string if the sync was aborted.
+    Raises on API errors.
+
+    All safety checks run before any Outline write operation.
     """
     changed = update_pocket_userstore(True)
 
+    with _userstore_lock:
+        ts = last_updated_timestamp
+    if ts is None or datetime.now(timezone.utc) - ts > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1):
+        logger.warning("Outline sync aborted: PocketID cache is stale or empty")
+        return "stale PocketID cache"
+
     if not pocket_userstore:
+        logger.warning("Outline sync aborted: PocketID returned empty user list")
         return "empty Pocket user store"
 
     if not force and not changed:
@@ -112,18 +121,30 @@ def _run_sync(force: bool = False) -> str | None:
     pocket_groups = pocket.get_unique_groups()
 
     if not pocket_groups:
+        logger.warning("Outline sync aborted: PocketID returned empty group list")
         return "empty Pocket groups"
 
-    # Fetch Outline groups once; create_missing_groups / delete_extra_groups
-    # return an updated list so we never need to re-fetch from the API.
+    # Read all Outline state before any writes so safety checks can run first.
     outline_groups = outline.fetch_outline_groups()
+    outline_users = outline.build_outline_user_store(outline_groups)
+
+    if len(outline_users) > len(pocket_userstore):
+        logger.warning(
+            "Outline sync aborted: Outline has %d users but PocketID only returned %d"
+            " — possible incomplete PocketID fetch",
+            len(outline_users), len(pocket_userstore),
+        )
+        return "Outline user count exceeds PocketID user count"
+
+    # All checks passed — proceed with writes.
+    # create_missing_groups / delete_extra_groups return an updated list so we
+    # never need to re-fetch from the API. outline_users (fetched above with the
+    # pre-write group list) is still valid: new groups start empty and deleted
+    # groups are excluded via group_name_to_id.
     outline_groups = outline.create_missing_groups(pocket_groups, outline_groups)
     outline_groups = outline.delete_extra_groups(pocket_groups, outline_groups)
 
     group_name_to_id = outline.build_group_name_to_id(outline_groups)
-
-    # Build the Outline user store once and share it across all sync operations.
-    outline_users = outline.build_outline_user_store(outline_groups)
 
     outline.sync_group_memberships(pocket_userstore, outline_users, group_name_to_id)
     outline.sync_suspended_status(pocket_userstore, outline_users)

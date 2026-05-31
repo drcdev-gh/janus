@@ -151,10 +151,10 @@ class TestRunSync:
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value={"Group A"}), \
              patch("main.outline.fetch_outline_groups", return_value=groups), \
+             patch("main.outline.build_outline_user_store", return_value=[]), \
              patch("main.outline.create_missing_groups", return_value=groups), \
              patch("main.outline.delete_extra_groups", return_value=groups), \
              patch("main.outline.build_group_name_to_id", return_value={}), \
-             patch("main.outline.build_outline_user_store", return_value=[]), \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
             assert main._run_sync(force=True) is None
@@ -176,6 +176,104 @@ class TestRunSync:
         with patch("main.pocket.sync_from_pocket_id", side_effect=Exception("API down")):
             with pytest.raises(Exception, match="API down"):
                 main._run_sync(force=True)
+
+    def test_empty_user_list_logs_warning(self, caplog):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[]):
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                main._run_sync(force=True)
+        assert "empty user list" in caplog.text
+
+    def test_empty_group_list_logs_warning(self, caplog):
+        with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
+             patch("main.pocket.get_unique_groups", return_value=set()):
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                main._run_sync(force=True)
+        assert "empty group list" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _run_sync — pre-write safety guards
+# ---------------------------------------------------------------------------
+
+class TestRunSyncGuards:
+    def setup_method(self):
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def _full_sync_patches(self, pocket_users, outline_users_list):
+        groups = [{"id": "g1", "name": "Group A"}]
+        return [
+            patch("main.pocket.sync_from_pocket_id", return_value=pocket_users),
+            patch("main.pocket.get_unique_groups", return_value={"Group A"}),
+            patch("main.outline.fetch_outline_groups", return_value=groups),
+            patch("main.outline.build_outline_user_store", return_value=outline_users_list),
+            patch("main.outline.create_missing_groups", return_value=groups),
+            patch("main.outline.delete_extra_groups", return_value=groups),
+            patch("main.outline.build_group_name_to_id", return_value={}),
+            patch("main.outline.sync_group_memberships"),
+            patch("main.outline.sync_suspended_status"),
+        ]
+
+    def test_stale_cache_aborts_before_any_outline_write(self):
+        main.pocket_userstore = [_pu("a@b.com")]
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.2
+        )
+        with patch("main.update_pocket_userstore", return_value=True), \
+             patch("main.outline.fetch_outline_groups") as mock_fetch, \
+             patch("main.outline.create_missing_groups") as mock_create:
+            result = main._run_sync(force=True)
+        assert result is not None
+        assert "stale" in result.lower()
+        mock_fetch.assert_not_called()
+        mock_create.assert_not_called()
+
+    def test_stale_cache_logs_warning(self, caplog):
+        main.pocket_userstore = [_pu("a@b.com")]
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.2
+        )
+        with patch("main.update_pocket_userstore", return_value=True):
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                main._run_sync(force=True)
+        assert "stale" in caplog.text
+
+    def test_outline_exceeds_pocket_count_aborts_all_writes(self):
+        pocket_users = [_pu("a@b.com")]            # 1 PocketID user
+        outline_users = [MagicMock(), MagicMock()]  # 2 Outline users
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._full_sync_patches(pocket_users, outline_users)]
+            result = main._run_sync(force=True)
+        mock_create, mock_delete, mock_memberships, mock_suspend = mocks[4], mocks[5], mocks[7], mocks[8]
+        assert result is not None
+        assert "outline" in result.lower()
+        mock_create.assert_not_called()
+        mock_delete.assert_not_called()
+        mock_memberships.assert_not_called()
+        mock_suspend.assert_not_called()
+
+    def test_outline_exceeds_pocket_count_logs_warning_with_counts(self, caplog):
+        pocket_users = [_pu("a@b.com")]
+        outline_users = [MagicMock(), MagicMock()]
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for p in self._full_sync_patches(pocket_users, outline_users):
+                stack.enter_context(p)
+            with caplog.at_level("WARNING", logger="uvicorn"):
+                main._run_sync(force=True)
+        assert "2" in caplog.text and "1" in caplog.text
+
+    def test_equal_counts_does_not_abort(self):
+        pocket_users = [_pu("a@b.com")]
+        outline_users = [MagicMock()]  # 1 == 1, should proceed
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._full_sync_patches(pocket_users, outline_users)]
+            result = main._run_sync(force=True)
+        mock_suspend = mocks[8]
+        assert result is None
+        mock_suspend.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -305,10 +403,10 @@ class TestForceSyncOutlineEndpoint:
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value={"Group A"}), \
              patch("main.outline.fetch_outline_groups", return_value=groups), \
+             patch("main.outline.build_outline_user_store", return_value=outline_users) as mock_build, \
              patch("main.outline.create_missing_groups", return_value=groups), \
              patch("main.outline.delete_extra_groups", return_value=groups), \
              patch("main.outline.build_group_name_to_id", return_value={"Group A": "g1"}), \
-             patch("main.outline.build_outline_user_store", return_value=outline_users) as mock_build, \
              patch("main.outline.sync_group_memberships") as mock_sync, \
              patch("main.outline.sync_suspended_status") as mock_suspend:
             client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
