@@ -224,6 +224,12 @@ def health():
 
     checks["last_sync"] = "ok" if last_sync_error is None else last_sync_error
 
+    ssh_stale = (
+        last_updated_timestamp is None
+        or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1)
+    )
+    checks["ssh_cache"] = "stale" if ssh_stale else "ok"
+
     result = {
         "status": "healthy" if all(v == "ok" for v in checks.values()) else "unhealthy",
         "checks": checks,

@@ -534,6 +534,7 @@ class TestHealthEndpoint:
         main.last_sync_error = None
         main._health_cache = None
         main._health_cache_time = None
+        main.last_updated_timestamp = datetime.now(timezone.utc)
 
     def test_healthy_when_all_checks_pass(self):
         with patch("main._ping_host"):
@@ -541,7 +542,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         assert response.json() == {
             "status": "healthy",
-            "checks": {"pocketid": "ok", "outline": "ok", "last_sync": "ok"},
+            "checks": {"pocketid": "ok", "outline": "ok", "last_sync": "ok", "ssh_cache": "ok"},
         }
 
     def test_unhealthy_when_pocketid_unreachable(self):
@@ -613,6 +614,37 @@ class TestHealthEndpoint:
             main.last_sync_error = None  # simulate recovery
             response = client.get("/health")  # should still return cached 503
         assert response.status_code == 503
+
+    def test_healthy_includes_ssh_cache_ok_when_fresh(self):
+        main.last_updated_timestamp = datetime.now(timezone.utc)
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.json()["checks"]["ssh_cache"] == "ok"
+        assert response.status_code == 200
+
+    def test_unhealthy_when_ssh_cache_is_none(self):
+        main.last_updated_timestamp = None
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.status_code == 503
+        assert response.json()["checks"]["ssh_cache"] == "stale"
+
+    def test_unhealthy_when_ssh_cache_is_stale(self):
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.2
+        )
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.status_code == 503
+        assert response.json()["checks"]["ssh_cache"] == "stale"
+
+    def test_ssh_cache_ok_within_grace_window(self):
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.05
+        )
+        with patch("main._ping_host"):
+            response = client.get("/health")
+        assert response.json()["checks"]["ssh_cache"] == "ok"
 
 
 # ---------------------------------------------------------------------------
