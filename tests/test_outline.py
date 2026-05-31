@@ -484,9 +484,16 @@ class TestDryRun:
             sync_suspended_status(pocket_users, outline_users)
         assert "User status: 1 suspended, 0 reactivated (dry run)" in caplog.text
 
-    def test_per_operation_logs_still_fire(self, caplog):
+    def test_per_operation_logs_use_would_prefix(self, caplog):
         pocket_users = [_pu("a@b.com", groups=["Eng"])]
         outline_users = [_ou("o1", "a@b.com", groups=[])]
         with caplog.at_level("INFO", logger="uvicorn"):
             sync_group_memberships(pocket_users, outline_users, {"Eng": "g1"})
-        assert "Adding a@b.com to group Eng" in caplog.text
+        assert "Would add a@b.com to group Eng" in caplog.text
+
+    def test_per_operation_suspend_uses_would_prefix(self, caplog):
+        pocket_users = [_pu("a@b.com", disabled=True)]
+        outline_users = [_ou("o1", "a@b.com", suspended=False)]
+        with caplog.at_level("INFO", logger="uvicorn"):
+            sync_suspended_status(pocket_users, outline_users)
+        assert "Would suspend user a@b.com" in caplog.text

@@ -162,7 +162,7 @@ def create_missing_groups(pocket_groups: set[str], groups: list[dict]) -> list[d
     created = 0
     for name in pocket_groups:
         if name not in existing:
-            logger.info("Creating group %s", name)
+            logger.info("%s group %s", "Would create" if DRY_RUN else "Creating", name)
             if DRY_RUN:
                 created += 1
             else:
@@ -186,7 +186,7 @@ def delete_extra_groups(pocket_groups: set[str], groups: list[dict]) -> list[dic
         if group["name"] in pocket_groups:
             remaining.append(group)
         else:
-            logger.info("Deleting group %s", group["name"])
+            logger.info("%s group %s", "Would delete" if DRY_RUN else "Deleting", group["name"])
             delete_outline_group(group["id"])
             deleted += 1
     logger.info("Groups: %d deleted%s", deleted, " (dry run)" if DRY_RUN else "")
@@ -223,7 +223,7 @@ def sync_group_memberships(
             if group_id is None:
                 logger.warning("Group %s not found in Outline", group_name)
                 continue
-            logger.info("Adding %s to group %s", outline_user.email, group_name)
+            logger.info("%s %s to group %s", "Would add" if DRY_RUN else "Adding", outline_user.email, group_name)
             add_group_membership(group_id, outline_user.id)
             added += 1
 
@@ -232,7 +232,7 @@ def sync_group_memberships(
             if group_id is None:
                 logger.warning("Group %s not found in Outline", group_name)
                 continue
-            logger.info("Removing %s from group %s", outline_user.email, group_name)
+            logger.info("%s %s from group %s", "Would remove" if DRY_RUN else "Removing", outline_user.email, group_name)
             delete_group_membership(group_id, outline_user.id)
             removed += 1
     logger.info("Group memberships: %d added, %d removed%s", added, removed, " (dry run)" if DRY_RUN else "")
@@ -253,12 +253,12 @@ def sync_suspended_status(
             logger.warning("Outline user %s has no matching PocketID account", outline_user.email)
             continue
         if pocket_user.disabled and not outline_user.suspended:
-            logger.info("Suspending user %s", outline_user.email)
+            logger.info("%s user %s", "Would suspend" if DRY_RUN else "Suspending", outline_user.email)
             if not DRY_RUN:
                 _post("users.suspend", {"id": outline_user.id})
             suspended += 1
         elif not pocket_user.disabled and outline_user.suspended:
-            logger.info("Reactivating user %s", outline_user.email)
+            logger.info("%s user %s", "Would reactivate" if DRY_RUN else "Reactivating", outline_user.email)
             if not DRY_RUN:
                 _post("users.activate", {"id": outline_user.id})
             reactivated += 1
