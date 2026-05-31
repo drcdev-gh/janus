@@ -27,18 +27,16 @@ class TestApiKeyComparison:
     def test_correct_key_is_accepted(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value=set()):
-            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         assert response.status_code != 403
 
     def test_wrong_key_is_rejected(self):
-        response = client.post("/outline/sync", headers={"x-api-key": "wrong"})
+        response = client.post("/outline/force-sync", headers={"x-api-key": "wrong"})
         assert response.status_code == 403
 
     def test_comparison_uses_compare_digest(self):
-        # Verify the implementation calls hmac.compare_digest rather than ==
-        # by inspecting the source — this guards against accidental regression.
         import inspect
-        source = inspect.getsource(main.sync_outline)
+        source = inspect.getsource(main.force_sync_outline)
         assert "compare_digest" in source
 
 
@@ -139,7 +137,7 @@ class TestUpdatePocketUserstore:
 
 
 # ---------------------------------------------------------------------------
-# _run_sync
+# _run_sync — core behaviour
 # ---------------------------------------------------------------------------
 
 class TestRunSync:
@@ -158,54 +156,131 @@ class TestRunSync:
              patch("main.outline.build_outline_user_store", return_value=[]), \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
-            assert main._run_sync() is None
+            assert main._run_sync(force=True) is None
 
     def test_returns_error_string_when_pocket_store_empty(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[]):
-            result = main._run_sync()
+            result = main._run_sync(force=True)
         assert result is not None
         assert "empty" in result.lower()
 
     def test_returns_error_string_when_pocket_groups_empty(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value=set()):
-            result = main._run_sync()
+            result = main._run_sync(force=True)
         assert result is not None
         assert "empty" in result.lower()
 
     def test_propagates_api_exceptions(self):
         with patch("main.pocket.sync_from_pocket_id", side_effect=Exception("API down")):
             with pytest.raises(Exception, match="API down"):
-                main._run_sync()
+                main._run_sync(force=True)
 
 
 # ---------------------------------------------------------------------------
-# POST /outline/sync
+# _run_sync — force flag
 # ---------------------------------------------------------------------------
 
-class TestSyncOutlineEndpoint:
+class TestRunSyncForceFlag:
+    def setup_method(self):
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def test_normal_sync_skips_outline_when_pocket_unchanged(self):
+        users = [_pu("a@b.com")]
+        main.pocket_userstore = users
+        main.last_updated_timestamp = None  # force a PocketID refresh
+        with patch("main.pocket.sync_from_pocket_id", return_value=users), \
+             patch("main.outline.fetch_outline_groups") as mock_outline:
+            result = main._run_sync(force=False)
+        assert result is None
+        mock_outline.assert_not_called()
+
+    def test_force_sync_runs_outline_even_when_pocket_unchanged(self):
+        users = [_pu("a@b.com")]
+        main.pocket_userstore = users
+        main.last_updated_timestamp = None
+        groups = [{"id": "g1", "name": "Group A"}]
+        with patch("main.pocket.sync_from_pocket_id", return_value=users), \
+             patch("main.pocket.get_unique_groups", return_value={"Group A"}), \
+             patch("main.outline.fetch_outline_groups", return_value=groups), \
+             patch("main.outline.create_missing_groups", return_value=groups), \
+             patch("main.outline.delete_extra_groups", return_value=groups), \
+             patch("main.outline.build_group_name_to_id", return_value={}), \
+             patch("main.outline.build_outline_user_store", return_value=[]), \
+             patch("main.outline.sync_group_memberships"), \
+             patch("main.outline.sync_suspended_status") as mock_suspend:
+            result = main._run_sync(force=True)
+        assert result is None
+        mock_suspend.assert_called_once()
+
+    def test_normal_sync_runs_outline_when_pocket_changed(self):
+        main.pocket_userstore = [_pu("old@b.com")]
+        main.last_updated_timestamp = None
+        new_users = [_pu("new@b.com")]
+        groups = [{"id": "g1", "name": "Group A"}]
+        with patch("main.pocket.sync_from_pocket_id", return_value=new_users), \
+             patch("main.pocket.get_unique_groups", return_value={"Group A"}), \
+             patch("main.outline.fetch_outline_groups", return_value=groups), \
+             patch("main.outline.create_missing_groups", return_value=groups), \
+             patch("main.outline.delete_extra_groups", return_value=groups), \
+             patch("main.outline.build_group_name_to_id", return_value={}), \
+             patch("main.outline.build_outline_user_store", return_value=[]), \
+             patch("main.outline.sync_group_memberships"), \
+             patch("main.outline.sync_suspended_status") as mock_suspend:
+            result = main._run_sync(force=False)
+        assert result is None
+        mock_suspend.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _is_force_due
+# ---------------------------------------------------------------------------
+
+class TestIsForceDue:
+    def test_force_due_when_interval_elapsed(self):
+        last = datetime.now(timezone.utc) - timedelta(seconds=main.FORCE_SYNC_INTERVAL_SECONDS)
+        now = datetime.now(timezone.utc)
+        assert main._is_force_due(last, now) is True
+
+    def test_force_not_due_when_interval_not_elapsed(self):
+        last = datetime.now(timezone.utc) - timedelta(seconds=main.FORCE_SYNC_INTERVAL_SECONDS - 1)
+        now = datetime.now(timezone.utc)
+        assert main._is_force_due(last, now) is False
+
+    def test_force_due_exactly_at_boundary(self):
+        last = datetime.now(timezone.utc) - timedelta(seconds=main.FORCE_SYNC_INTERVAL_SECONDS)
+        now = last + timedelta(seconds=main.FORCE_SYNC_INTERVAL_SECONDS)
+        assert main._is_force_due(last, now) is True
+
+
+# ---------------------------------------------------------------------------
+# POST /outline/force-sync
+# ---------------------------------------------------------------------------
+
+class TestForceSyncOutlineEndpoint:
     def setup_method(self):
         main.pocket_userstore = None
         main.last_updated_timestamp = None
 
     def test_missing_api_key_returns_422(self):
-        response = client.post("/outline/sync")
+        response = client.post("/outline/force-sync")
         assert response.status_code == 422
 
     def test_wrong_api_key_returns_403(self):
-        response = client.post("/outline/sync", headers={"x-api-key": "wrong"})
+        response = client.post("/outline/force-sync", headers={"x-api-key": "wrong"})
         assert response.status_code == 403
 
     def test_empty_pocket_store_returns_404(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
              patch("main.pocket.get_unique_groups", return_value={"Group A"}):
-            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 404
 
     def test_empty_pocket_groups_returns_404(self):
         with patch("main.pocket.sync_from_pocket_id", return_value=[_pu("a@b.com")]), \
              patch("main.pocket.get_unique_groups", return_value=set()):
-            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 404
 
     def test_successful_sync_returns_ok(self):
@@ -219,7 +294,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=[]), \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
-            response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            response = client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
@@ -235,7 +310,7 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=outline_users) as mock_build, \
              patch("main.outline.sync_group_memberships") as mock_sync, \
              patch("main.outline.sync_suspended_status") as mock_suspend:
-            client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         mock_build.assert_called_once_with(groups)
         mock_sync.assert_called_once()
         mock_suspend.assert_called_once()
@@ -251,8 +326,39 @@ class TestSyncOutlineEndpoint:
              patch("main.outline.build_outline_user_store", return_value=[]) as mock_build, \
              patch("main.outline.sync_group_memberships"), \
              patch("main.outline.sync_suspended_status"):
-            client.post("/outline/sync", headers={"x-api-key": API_KEY})
+            client.post("/outline/force-sync", headers={"x-api-key": API_KEY})
         assert mock_build.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Old /outline/sync route removed
+# ---------------------------------------------------------------------------
+
+class TestOldSyncRouteRemoved:
+    def test_outline_sync_returns_404(self):
+        response = client.post("/outline/sync", headers={"x-api-key": API_KEY})
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Startup sync (lifespan)
+# ---------------------------------------------------------------------------
+
+class TestStartupSync:
+    def setup_method(self):
+        main.pocket_userstore = None
+        main.last_updated_timestamp = None
+
+    def test_startup_runs_force_sync(self):
+        with patch("main._run_sync", return_value=None) as mock_sync:
+            with TestClient(main.app):
+                pass
+        mock_sync.assert_called_once_with(force=True)
+
+    def test_startup_sync_failure_does_not_prevent_startup(self):
+        with patch("main._run_sync", side_effect=Exception("boom")):
+            with TestClient(main.app):
+                pass  # lifespan completes without re-raising
 
 
 # ---------------------------------------------------------------------------

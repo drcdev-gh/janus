@@ -43,6 +43,7 @@ pocket_userstore = None
 last_updated_timestamp = None
 
 SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", 30 * 60))
+FORCE_SYNC_INTERVAL_SECONDS = int(os.getenv("FORCE_SYNC_INTERVAL_SECONDS", 3 * 60 * 60))
 
 
 def update_pocket_userstore(force_update: bool) -> bool:
@@ -74,16 +75,21 @@ def update_pocket_userstore(force_update: bool) -> bool:
     return has_changed
 
 
-def _run_sync() -> str | None:
+def _run_sync(force: bool = False) -> str | None:
     """Run the full Outline sync.
 
+    When force=False, skips the Outline sync if PocketID data is unchanged.
     Returns None on success, or an error message if the sync was skipped
     due to an empty PocketID store or group list. Raises on API errors.
     """
-    update_pocket_userstore(True)
+    changed = update_pocket_userstore(True)
 
     if not pocket_userstore:
         return "empty Pocket user store"
+
+    if not force and not changed:
+        logger.info("PocketID data unchanged, skipping Outline sync")
+        return None
 
     pocket_groups = pocket.get_unique_groups()
 
@@ -106,28 +112,54 @@ def _run_sync() -> str | None:
     return None
 
 
-async def _scheduled_sync():
-    """Background task: run _run_sync every SYNC_INTERVAL_SECONDS.
+def _is_force_due(last_force: datetime, now: datetime) -> bool:
+    return (now - last_force) >= timedelta(seconds=FORCE_SYNC_INTERVAL_SECONDS)
 
-    _run_sync makes blocking HTTP calls so it runs in a thread-pool executor
-    to avoid stalling the event loop while SSH validations are in flight.
+
+async def _scheduled_sync(last_force_sync: datetime):
+    """Background task: normal sync every SYNC_INTERVAL_SECONDS, force sync every FORCE_SYNC_INTERVAL_SECONDS.
+
+    Tracks elapsed time to decide which to run each tick, so force and normal
+    syncs never fire simultaneously. _run_sync makes blocking HTTP calls so it
+    runs in a thread-pool executor to avoid stalling the event loop.
     """
+    last_force = last_force_sync
     while True:
         await asyncio.sleep(SYNC_INTERVAL_SECONDS)
-        logger.info("Scheduled sync starting")
+        now = datetime.now(timezone.utc)
+        force = _is_force_due(last_force, now)
+        if force:
+            last_force = now
+        label = "force" if force else "normal"
+        logger.info("Scheduled %s sync starting", label)
         try:
-            error = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+            error = await asyncio.get_running_loop().run_in_executor(
+                None, lambda f=force: _run_sync(force=f)
+            )
             if error:
-                logger.warning("Scheduled sync skipped: %s", error)
+                logger.warning("Scheduled %s sync skipped: %s", label, error)
             else:
-                logger.info("Scheduled sync complete")
+                logger.info("Scheduled %s sync complete", label)
         except Exception:
-            logger.exception("Scheduled sync failed")
+            logger.exception("Scheduled %s sync failed", label)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_scheduled_sync())
+    startup_time = datetime.now(timezone.utc)
+    logger.info("Startup sync starting")
+    try:
+        error = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _run_sync(force=True)
+        )
+        if error:
+            logger.warning("Startup sync skipped: %s", error)
+        else:
+            logger.info("Startup sync complete")
+    except Exception:
+        logger.exception("Startup sync failed")
+
+    task = asyncio.create_task(_scheduled_sync(last_force_sync=startup_time))
     yield
     task.cancel()
     try:
@@ -146,16 +178,16 @@ app.add_middleware(
 )
 
 
-@app.post("/outline/sync")
-def sync_outline(x_api_key: str = Header(...)):
+@app.post("/outline/force-sync")
+def force_sync_outline(x_api_key: str = Header(...)):
     if not hmac.compare_digest(x_api_key, API_KEY):
         logger.warning("Invalid API key received")
         raise HTTPException(status_code=403)
 
-    logger.info("Manual sync triggered")
-    error = _run_sync()
+    logger.info("Manual force sync triggered")
+    error = _run_sync(force=True)
     if error:
-        logger.warning("Sync skipped: %s", error)
+        logger.warning("Force sync skipped: %s", error)
         raise HTTPException(status_code=404)
     return {"status": "ok"}
 

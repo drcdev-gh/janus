@@ -31,7 +31,8 @@ SSH public keys for `AuthorizedKeysCommand` use. Currently supports Outline and 
 | `OUTLINE_API_KEY` | Outline API token |
 | `SSH_ALLOWED_GROUP` | PocketID group whose members may log in via SSH |
 | `API_KEY` | Shared secret for authenticating requests to janus |
-| `SYNC_INTERVAL_SECONDS` | Background sync interval (default: 1800) |
+| `SYNC_INTERVAL_SECONDS` | Normal background sync interval (default: 1800) |
+| `FORCE_SYNC_INTERVAL_SECONDS` | Force sync interval within the background task (default: 10800) |
 
 Both `*_API_URL` values are validated at startup — the process exits if either is not `https://`.
 
@@ -74,17 +75,23 @@ requires a lock if running with multiple workers.
 
 ## Background task
 
-`_scheduled_sync()` runs in a `asyncio.Task` started from the FastAPI `lifespan` context.
-It sleeps for `SYNC_INTERVAL_SECONDS`, then runs `_run_sync()` via
-`run_in_executor(None, _run_sync)` (thread pool) to avoid blocking the event loop.
+A single `_scheduled_sync(last_force_sync)` task runs in an `asyncio.Task` started from
+the FastAPI `lifespan` context. It wakes every `SYNC_INTERVAL_SECONDS` and calls
+`_run_sync(force=...)` via `run_in_executor(None, ...)` to avoid blocking the event loop.
+
+The task decides force vs normal each tick by comparing elapsed time since `last_force`
+against `FORCE_SYNC_INTERVAL_SECONDS`. Force and normal syncs never overlap — the tick
+is either one or the other. `last_force_sync` is initialised to the startup time (since
+the lifespan runs a force sync before starting the task), so the first scheduled force
+fires ~3 hours after startup.
 
 ---
 
 ## Routes
 
-### `POST /outline/sync`
+### `POST /outline/force-sync`
 - Auth: `x-api-key` header (constant-time comparison via `hmac.compare_digest`)
-- Forces a full PocketID fetch, then runs the Outline sync pipeline
+- Forces a full PocketID fetch and always runs the Outline sync pipeline regardless of whether data changed
 - Returns `{"status": "ok"}` on success, 404 if the PocketID store or group list is empty
 
 ### `GET /ssh/validate`
@@ -95,7 +102,13 @@ It sleeps for `SYNC_INTERVAL_SECONDS`, then runs `_run_sync()` via
 
 ---
 
-## Outline sync pipeline (`_run_sync`)
+## Outline sync pipeline (`_run_sync(force)`)
+
+When `force=False`, `_run_sync` returns early (without touching Outline) if
+`update_pocket_userstore` reports no change. When `force=True` (startup, 3-hour tick,
+`/outline/force-sync`), the full pipeline always runs.
+
+
 
 1. Force-refresh PocketID user store
 2. Fetch authoritative group list from PocketID (`/api/user-groups`)
