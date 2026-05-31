@@ -1,6 +1,6 @@
 # SSH login latency: read from shared cache, reject on stale
 
-**Status:** open
+**Status:** done
 
 ## Goal
 

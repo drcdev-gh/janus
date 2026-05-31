@@ -134,10 +134,17 @@ Steps 4–5 each return the updated group list so the pipeline never re-fetches 
 
 ## SSH validation flow
 
-1. `ssh.validate_keyformat(pubkey)` — regex check for valid key type and base64 body
-2. Walk `pocket_userstore`; for each user in `SSH_ALLOWED_GROUP`, check the `ssh-pubkey`
+1. Staleness check — if `last_updated_timestamp` is `None` or older than
+   `SYNC_INTERVAL_SECONDS * 1.1`, the request is rejected (HTTP 204) immediately.
+   The 1.1× grace window avoids false rejections when the SSH check races the
+   background sync timer by a few seconds.
+2. `ssh.validate_keyformat(pubkey)` — regex check for valid key type and base64 body
+3. Walk `pocket_userstore`; for each user in `SSH_ALLOWED_GROUP`, check the `ssh-pubkey`
    custom claim against the presented key
-3. Return the matched key string on success, `None` on failure
+4. Return the matched key string on success, `None` on failure
+
+The endpoint never triggers a PocketID fetch inline; it reads the cache maintained by
+the background sync task.
 
 ---
 

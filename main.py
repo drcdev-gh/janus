@@ -255,7 +255,14 @@ def validate_ssh_login(pubkey: str = Query(max_length=8192), x_api_key: str = He
     if DRY_RUN:
         return PlainTextResponse("", status_code=204)
 
-    update_pocket_userstore(False)
+    now = datetime.now(timezone.utc)
+    if (
+        last_updated_timestamp is None
+        or now - last_updated_timestamp > timedelta(seconds=SYNC_INTERVAL_SECONDS * 1.1)
+    ):
+        logger.warning("SSH login rejected: user cache is stale or empty")
+        return PlainTextResponse("", status_code=204)
+
     key = ssh.validate_pubkey(pubkey, pocket_userstore)
     if key is None:
         return PlainTextResponse("", status_code=204)

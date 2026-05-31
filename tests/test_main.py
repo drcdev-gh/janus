@@ -387,8 +387,9 @@ class TestSshValidateEndpoint:
 
     def test_valid_key_returns_200_with_key_body(self):
         key = "ssh-ed25519 AAAA"
-        with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
-             patch("main.ssh.validate_pubkey", return_value=key):
+        main.pocket_userstore = []
+        main.last_updated_timestamp = datetime.now(timezone.utc)
+        with patch("main.ssh.validate_pubkey", return_value=key):
             response = client.get("/ssh/validate",
                                   params={"pubkey": key},
                                   headers={"x-api-key": API_KEY})
@@ -396,8 +397,9 @@ class TestSshValidateEndpoint:
         assert response.text == key + "\n"
 
     def test_invalid_key_returns_204(self):
-        with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
-             patch("main.ssh.validate_pubkey", return_value=None):
+        main.pocket_userstore = []
+        main.last_updated_timestamp = datetime.now(timezone.utc)
+        with patch("main.ssh.validate_pubkey", return_value=None):
             response = client.get("/ssh/validate",
                                   params={"pubkey": "ssh-ed25519 AAAA"},
                                   headers={"x-api-key": API_KEY})
@@ -405,14 +407,57 @@ class TestSshValidateEndpoint:
 
     def test_delegates_pubkey_and_store_to_ssh_module(self):
         key = "ssh-ed25519 AAAA"
-        with patch("main.pocket.sync_from_pocket_id", return_value=[]), \
-             patch("main.ssh.validate_pubkey", return_value=None) as mock_validate:
+        main.pocket_userstore = []
+        main.last_updated_timestamp = datetime.now(timezone.utc)
+        with patch("main.ssh.validate_pubkey", return_value=None) as mock_validate:
             client.get("/ssh/validate", params={"pubkey": key}, headers={"x-api-key": API_KEY})
         mock_validate.assert_called_once_with(key, main.pocket_userstore)
 
     def test_uses_cached_store_when_fresh(self):
         users = [_pu("a@b.com")]
         main.pocket_userstore = users
+        main.last_updated_timestamp = datetime.now(timezone.utc)
+        with patch("main.pocket.sync_from_pocket_id") as mock_sync, \
+             patch("main.ssh.validate_pubkey", return_value=None):
+            client.get("/ssh/validate",
+                       params={"pubkey": "ssh-ed25519 AAAA"},
+                       headers={"x-api-key": API_KEY})
+        mock_sync.assert_not_called()
+
+    def test_empty_cache_returns_204(self):
+        # last_updated_timestamp is None from setup_method
+        with patch("main.ssh.validate_pubkey") as mock_validate:
+            response = client.get("/ssh/validate",
+                                  params={"pubkey": "ssh-ed25519 AAAA"},
+                                  headers={"x-api-key": API_KEY})
+        assert response.status_code == 204
+        mock_validate.assert_not_called()
+
+    def test_stale_cache_returns_204_without_validating(self):
+        main.pocket_userstore = [_pu("a@b.com")]
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.2
+        )
+        with patch("main.ssh.validate_pubkey") as mock_validate:
+            response = client.get("/ssh/validate",
+                                  params={"pubkey": "ssh-ed25519 AAAA"},
+                                  headers={"x-api-key": API_KEY})
+        assert response.status_code == 204
+        mock_validate.assert_not_called()
+
+    def test_cache_at_grace_boundary_allows_validation(self):
+        main.pocket_userstore = []
+        main.last_updated_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=main.SYNC_INTERVAL_SECONDS * 1.05
+        )
+        with patch("main.ssh.validate_pubkey", return_value=None) as mock_validate:
+            client.get("/ssh/validate",
+                       params={"pubkey": "ssh-ed25519 AAAA"},
+                       headers={"x-api-key": API_KEY})
+        mock_validate.assert_called_once()
+
+    def test_ssh_validate_never_calls_pocket_sync(self):
+        main.pocket_userstore = []
         main.last_updated_timestamp = datetime.now(timezone.utc)
         with patch("main.pocket.sync_from_pocket_id") as mock_sync, \
              patch("main.ssh.validate_pubkey", return_value=None):
